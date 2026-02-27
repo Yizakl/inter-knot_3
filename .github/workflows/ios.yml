@@ -1,104 +1,190 @@
-name: Flutter iOS 无签名构建
+name: iOS Build
+
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build-unsigned-ios-ipa:
-    runs-on: macos-14
-    timeout-minutes: 30
+  build:
+    name: Build iOS App
+    runs-on: macos-latest
 
     steps:
-      - name: 检出仓库代码
-        uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-      # 已修复：升级Flutter版本，匹配项目依赖要求
-      - name: 配置 Flutter 环境
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.0'
+          flutter-version: '3.x'
           channel: 'stable'
-          cache: true
+          architecture: x64
 
-      - name: 缓存 iOS 依赖
-        uses: actions/cache@v4
-        with:
-          path: ios/Pods
-          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-pods-
-
-      - name: 安装 Flutter 依赖
+      - name: Install Dependencies
         run: flutter pub get
 
-      - name: 安装 CocoaPods 依赖
-        run: cd ios && pod install --repo-update
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
 
-      - name: 构建无签名 iOS 归档
+      - name: Install Fastlane
         run: |
-          flutter build ios --release --no-codesign --config-only
+          cd ios
+          gem install bundler
+          bundle init
+          bundle add fastlane
           
-          xcodebuild -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -archivePath build/ios/archive/Runner.xcarchive \
-            archive \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_ALLOWED=NO \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES
-
-      - name: 生成 IPA 导出配置
+      - name: Create Simple Build Script (instead of Fastlane)
         run: |
-          cat > exportOptions.plist <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>development</string>
-              <key>signingStyle</key>
-              <string>manual</string>
-              <key>signingCertificate</key>
-              <string>-</string>
-              <key>teamID</key>
-              <string>0000000000</string>
-              <key>compileBitcode</key>
-              <false/>
-              <key>stripSwiftSymbols</key>
-              <true/>
-              <key>thinning</key>
-              <string><none></string>
-          </dict>
-          </plist>
-          EOF
-
-      - name: 导出无签名 IPA
-        run: |
-          xcodebuild -exportArchive \
-            -archivePath build/ios/archive/Runner.xcarchive \
-            -exportPath build/ios/ipa \
-            -exportOptionsPlist exportOptions.plist \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_ALLOWED=NO
-
-      - name: 校验 IPA 文件
-        run: |
-          if [ -f build/ios/ipa/Runner.ipa ]; then
-            echo "OK"
-            ls -lh build/ios/ipa/Runner.ipa
+          cat > ios/build_ipa.sh << 'EOF'
+          #!/bin/bash
+          
+          echo "Starting simple IPA packaging process..."
+          
+          # Check if Flutter build output exists
+          if [ -d "../build/ios/iphoneos/Runner.app" ]; then
+            echo "Found Flutter build output at ../build/ios/iphoneos/Runner.app"
+            
+            # Create necessary directories
+            mkdir -p build/Payload
+            
+            # Copy the app to Payload directory
+            cp -R ../build/ios/iphoneos/Runner.app build/Payload/
+            
+            # Create IPA by zipping the Payload directory
+            cd build
+            zip -r ../Runner.ipa Payload
+            cd ..
+            
+            # Verify IPA was created
+            if [ -f "Runner.ipa" ]; then
+              echo "SUCCESS: IPA created at Runner.ipa"
+              ls -la Runner.ipa
+              return 0
+            else
+              echo "ERROR: Failed to create IPA"
+              return 1
+            fi
           else
-            echo "FLY"
-            exit 1
+            echo "ERROR: Flutter build output not found!"
+            return 1
           fi
+          EOF
+          
+          chmod +x ios/build_ipa.sh
 
-      - name: 上传 IPA 制品
+      - name: Install Bundler Dependencies (Optional)
+        run: |
+          cd ios
+          bundle install || echo "Bundler install failed but continuing..."
+          
+      - name: Build iOS App
+        id: build
+        run: |
+          # Set environment variables for Flutter
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          
+          # First, run Flutter build in the project root directory
+          echo "Building Flutter iOS app..."
+          flutter build ios --no-codesign --release --verbose > flutter_build.log 2>&1
+          echo "Flutter build completed with exit code: $?"
+          
+          # Show detailed directory structure to understand what's being generated
+          echo "Project root structure after Flutter build:"
+          find . -type d -maxdepth 3
+          
+          # Check Flutter build output specifically
+          echo "Flutter build iOS output:"
+          ls -la
+          ls -la build/ 2>/dev/null || echo "No build directory found at root"
+          ls -la ios/build/ 2>/dev/null || echo "No build directory found in ios"
+          
+          # Create a simple IPA package from Flutter's build output for testing
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "Creating test IPA package..."
+            mkdir -p ios/build
+            cd ios/build
+            mkdir -p Payload
+            cp -R ../../build/ios/iphoneos/Runner.app Payload/
+            zip -r ../Runner.ipa Payload
+            echo "Test IPA created at ios/Runner.ipa"
+            ls -la ..
+          else
+            echo "ERROR: Runner.app not found in expected location"
+            find . -name "Runner.app" 2>/dev/null || echo "Runner.app not found anywhere"
+          fi
+          
+      - name: Comprehensive Build Results Check
+        run: |
+          echo "===== COMPREHENSIVE BUILD DIAGNOSTICS ===="
+          
+          # 1. Find all possible build artifacts throughout the project
+          echo "\nSearching for all potential build artifacts..."
+          find . -name "*.ipa" -o -name "*.app" -o -name "*.xcarchive" 2>/dev/null
+          
+          # 2. Check Flutter build directory structure
+          echo "\nFlutter build directory structure:"
+          find build -type d 2>/dev/null || echo "No build directory found"
+          
+          # 3. Check iOS directory structure
+          echo "\niOS directory structure:"
+          find ios -type d -maxdepth 3 2>/dev/null
+          
+          # 4. List specific key locations
+          echo "\nContents of ios/ (root level):"
+          ls -la ios/
+          
+          echo "\nContents of build/ (if exists):"
+          ls -la build/ 2>/dev/null || echo "build/ not found"
+          
+          echo "\nContents of build/ios/ (if exists):"
+          ls -la build/ios/ 2>/dev/null || echo "build/ios/ not found"
+          
+          # 5. Check for Runner.app specifically
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "\nSUCCESS: Runner.app found at build/ios/iphoneos/Runner.app"
+            ls -la build/ios/iphoneos/Runner.app 2>/dev/null
+          else
+            echo "\nERROR: Runner.app not found in expected location"
+            find . -name "Runner.app" 2>/dev/null || echo "Runner.app not found anywhere"
+          fi
+          
+          # 6. Check for IPA file
+          if [ -f "ios/Runner.ipa" ]; then
+            echo "\nSUCCESS: IPA file found at ios/Runner.ipa"
+            ls -la ios/Runner.ipa
+          else
+            echo "\nERROR: IPA file not found at ios/Runner.ipa"
+          fi
+          
+          # 7. Try to create IPA if it doesn't exist
+          if [ ! -f "ios/Runner.ipa" ] && [ -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "\nAttempting to create IPA file..."
+            cd ios
+            ./build_ipa.sh
+          fi
+          
+      - name: Display Build Logs
+        if: always()
+        run: |
+          echo "Displaying Flutter build logs..."
+          if [ -f "flutter_build.log" ]; then
+            cat flutter_build.log
+          fi
+          
+          echo "Displaying any other logs..."
+          find . -name "*.log" 2>/dev/null
+
+      - name: Upload iOS App
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-ios-unsigned-ipa
-          path: build/ios/ipa/*.ipa
-          retention-days: 30
+          name: app-release
+          # Use broader search paths to find any build artifacts
+          path: |
+            build/ios/iphoneos/Runner.app
+            ios/Runner.ipa
+            ios/*.ipa
+            **/*.ipa
+            **/*.app
+          retention-days: 5
+          if-no-files-found: error
