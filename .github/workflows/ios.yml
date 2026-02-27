@@ -1,0 +1,116 @@
+name: Flutter iOS 无签名构建
+# 触发规则：可根据需求修改分支、新增触发条件
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # 支持手动触发构建
+
+jobs:
+  build-unsigned-ios-ipa:
+    runs-on: macos-14 # 必须使用 macOS 运行器，仅 macOS 支持 iOS 构建
+    timeout-minutes: 30 # 构建超时时间，可根据项目调整
+
+    steps:
+      # 步骤1：检出项目代码
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      # 步骤2：配置 Flutter 环境
+      - name: 配置 Flutter 环境
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0' # 可替换为你的项目适配的 Flutter 版本
+          channel: 'stable'
+          cache: true # 开启 Flutter 缓存，大幅提升二次构建速度
+
+      # 步骤3：缓存 CocoaPods 依赖，提升构建速度
+      - name: 缓存 iOS 依赖
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      # 步骤4：安装 Flutter 项目依赖
+      - name: 安装 Flutter 依赖
+        run: flutter pub get
+
+      # 步骤5：安装 iOS 原生依赖
+      - name: 安装 CocoaPods 依赖
+        run: cd ios && pod install --repo-update
+
+      # 步骤6：构建无签名 iOS 归档文件（xcarchive）
+      - name: 构建无签名 iOS 归档
+        run: |
+          # 先执行 Flutter 预构建，生成基础配置
+          flutter build ios --release --no-codesign --config-only
+          
+          # 用 xcodebuild 强制无签名构建归档，彻底绕过签名校验
+          xcodebuild -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            archive \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      # 步骤7：生成无签名 IPA 导出所需的配置文件
+      - name: 生成 IPA 导出配置
+        run: |
+          cat > exportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>development</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>signingCertificate</key>
+              <string>-</string>
+              <key>teamID</key>
+              <string>0000000000</string>
+              <key>compileBitcode</key>
+              <false/>
+              <key>stripSwiftSymbols</key>
+              <true/>
+              <key>thinning</key>
+              <string><none></string>
+          </dict>
+          </plist>
+          EOF
+
+      # 步骤8：导出无签名 IPA 文件
+      - name: 导出无签名 IPA
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            -exportPath build/ios/ipa \
+            -exportOptionsPlist exportOptions.plist \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO
+
+      # 步骤9：校验 IPA 文件是否生成成功
+      - name: 校验 IPA 文件
+        run: |
+          if [ -f build/ios/ipa/Runner.ipa ]; then
+            echo "OK"
+            ls -lh build/ios/ipa/Runner.ipa
+          else
+            echo "FLY"
+            exit 1
+          fi
+
+      # 步骤10：上传 IPA 到 GitHub Actions 制品库
+      - name: 上传 IPA 制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-ios-unsigned-ipa
+          path: build/ios/ipa/*.ipa
+          retention-days: 30 # 制品保留天数，可根据需求调整（最大90天）
