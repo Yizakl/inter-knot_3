@@ -35,7 +35,9 @@ class Controller extends GetxController {
   final isSearching = false.obs;
   final newPostCount = 0.obs;
   final hasContentChange = false.obs;
+  final newlyInsertedPostIds = <String>{}.obs;
   Timer? _newPostCheckTimer;
+  Timer? _clearInsertedPostsTimer;
   Timer? _checkInEligibilityTimer;
 
   String rootToken = '';
@@ -367,6 +369,7 @@ class Controller extends GetxController {
   @override
   void onClose() {
     _newPostCheckTimer?.cancel();
+    _clearInsertedPostsTimer?.cancel();
     _cancelCheckInEligibilityTimer();
     super.onClose();
   }
@@ -539,6 +542,22 @@ class Controller extends GetxController {
     });
   }
 
+  void _markNewlyInsertedPosts(Iterable<HDataModel> posts) {
+    final ids = posts
+        .map((e) => e.id)
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    _clearInsertedPostsTimer?.cancel();
+    newlyInsertedPostIds.assignAll(ids);
+
+    if (ids.isNotEmpty) {
+      _clearInsertedPostsTimer = Timer(const Duration(milliseconds: 1100), () {
+        newlyInsertedPostIds.clear();
+      });
+    }
+  }
+
   Future<void> _checkNewPosts() async {
     if (searchQuery.isNotEmpty) return;
     // Don't check if we are currently searching/refreshing
@@ -589,10 +608,49 @@ class Controller extends GetxController {
   }
 
   Future<void> showNewPosts() async {
-    newPostCount.value = 0;
-    hasContentChange.value = false;
-    // Scroll to top is handled in UI usually, but refresh data here
-    await refreshSearchData();
+    // Only applies to default feed mode.
+    if (searchQuery.isNotEmpty) {
+      await refreshSearchData();
+      return;
+    }
+
+    // Reset timer to avoid polling conflicts while inserting new items.
+    _startNewPostCheck();
+    isSearching(true);
+    try {
+      final pagination = await api.search('', '');
+      final existingIds = searchResult.map((e) => e.id).toSet();
+      final inserted = pagination.nodes
+          .where((e) => e.id.isNotEmpty && !existingIds.contains(e.id))
+          .toList(growable: false);
+
+      // Prepend latest first-page items while preserving current list,
+      // so UI won't flash empty and feels smoother.
+      final merged = <HDataModel>{};
+      merged.addAll(pagination.nodes);
+      merged.addAll(searchResult);
+      searchResult.assignAll(merged);
+      _markNewlyInsertedPosts(inserted);
+
+      // Keep pagination progress if user has already loaded more pages.
+      if (searchEndCur == null || searchEndCur!.isEmpty) {
+        searchEndCur = pagination.endCursor;
+        searchHasNextPage.value = pagination.hasNextPage;
+      }
+
+      // Keep offline cache in sync with latest merged list.
+      try {
+        final cacheList = searchResult.map((e) => e.toJson()).toList();
+        box.write(_searchCacheKey, cacheList);
+      } catch (e) {
+        logger.e('Failed to save offline cache', error: e);
+      }
+
+      newPostCount.value = 0;
+      hasContentChange.value = false;
+    } finally {
+      isSearching(false);
+    }
   }
 
   Future<void> refreshUnreadNotificationCount() async {
@@ -714,6 +772,8 @@ class Controller extends GetxController {
       searchEndCur = null;
       searchCache.clear();
       HDataModel.discussionsCache.clear(); // 清空详情缓存
+      _clearInsertedPostsTimer?.cancel();
+      newlyInsertedPostIds.clear();
       searchResult.clear();
       newPostCount.value = 0;
       hasContentChange.value = false;
