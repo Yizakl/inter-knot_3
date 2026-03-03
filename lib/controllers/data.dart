@@ -35,7 +35,10 @@ class Controller extends GetxController {
   final isSearching = false.obs;
   final newPostCount = 0.obs;
   final hasContentChange = false.obs;
+  final newlyInsertedPostIds = <String>{}.obs;
   Timer? _newPostCheckTimer;
+  Timer? _clearInsertedPostsTimer;
+  Timer? _checkInEligibilityTimer;
 
   String rootToken = '';
 
@@ -47,17 +50,106 @@ class Controller extends GetxController {
   final isLogin = false.obs;
   final user = Rx<AuthorModel?>(null); // Author -> AuthorModel
   final authorId = RxnString();
+  final nextEligibleAtUtc = Rxn<DateTime>();
   final myDiscussionsCount = 0.obs;
   final isUploadingAvatar = false.obs;
+  final unreadNotificationCount = 0.obs;
 
   final bookmarks = <HDataModel>{}.obs;
   final favoriteIds = <String, String>{}.obs;
   final history = <HDataModel>{}.obs;
+  static const String _historyKey = 'history';
   static const String _localReadCacheKey = 'local_read_cache';
   static const String _localViewCacheKey = 'local_view_cache';
   static const int _localCacheMax = 500;
   final _localReadCache = <String, bool>{};
   final _localViewCache = <String, int>{};
+
+  List<String> _encodeHistoryForStorage(Iterable<HDataModel> list) {
+    final result = <String>[];
+    var count = 0;
+    for (final item in list) {
+      if (count >= _localCacheMax) break;
+      try {
+        result.add(jsonEncode(item.toJson()));
+        count++;
+      } catch (_) {
+        // Ignore invalid entries.
+      }
+    }
+    return result;
+  }
+
+  void _saveHistoryToLocal() {
+    try {
+      pref.setStringList(_historyKey, _encodeHistoryForStorage(history));
+    } catch (_) {
+      // Ignore persistence failures.
+    }
+  }
+
+  void _cancelCheckInEligibilityTimer() {
+    _checkInEligibilityTimer?.cancel();
+    _checkInEligibilityTimer = null;
+  }
+
+  void _scheduleCheckInEligibilityRefresh(DateTime? nextEligibleAt) {
+    _cancelCheckInEligibilityTimer();
+
+    if (!isLogin.value || nextEligibleAt == null) return;
+
+    final now = DateTime.now().toUtc();
+    if (!now.isBefore(nextEligibleAt)) {
+      nextEligibleAtUtc.value = null;
+      unawaited(refreshMyExp());
+      return;
+    }
+
+    final delay = nextEligibleAt.difference(now) + const Duration(seconds: 1);
+    _checkInEligibilityTimer = Timer(delay, () async {
+      if (!isLogin.value) return;
+      await refreshMyExp();
+    });
+  }
+
+  Future<void> refreshMyExp() async {
+    final u = user.value;
+    if (u == null) return;
+
+    try {
+      final expInfo = await api.getMyExp();
+      u.exp = expInfo.exp;
+      u.level = expInfo.level;
+      u.canCheckIn = expInfo.canCheckIn;
+      final last = expInfo.lastCheckInDate;
+      if (last != null && last.isNotEmpty) {
+        u.lastCheckInDate = last;
+      }
+      final days = expInfo.consecutiveCheckInDays;
+      if (days != null) {
+        u.consecutiveCheckInDays = days;
+      }
+
+      final nextEligibleAt = expInfo.nextEligibleAtUtc;
+      if (nextEligibleAt != null) {
+        nextEligibleAtUtc.value = nextEligibleAt;
+      }
+
+      if (u.canCheckIn) {
+        nextEligibleAtUtc.value = null;
+      }
+
+      final next = nextEligibleAtUtc.value;
+      if (next != null && !DateTime.now().toUtc().isBefore(next)) {
+        nextEligibleAtUtc.value = null;
+      }
+
+      _scheduleCheckInEligibilityRefresh(nextEligibleAtUtc.value);
+      user.refresh();
+    } catch (e) {
+      logger.w('Failed to refresh my exp', error: e);
+    }
+  }
 
   // Api instance
   final api = Get.find<Api>();
@@ -140,16 +232,42 @@ class Controller extends GetxController {
   Future<void> refreshSelfUserInfo({bool forceAvatarFetch = true}) async {
     try {
       final u = await api.getSelfUserInfo('');
+
+      try {
+        final expInfo = await api.getMyExp();
+        u.exp = expInfo.exp;
+        u.level = expInfo.level;
+        u.canCheckIn = expInfo.canCheckIn;
+        final last = expInfo.lastCheckInDate;
+        if (last != null && last.isNotEmpty) {
+          u.lastCheckInDate = last;
+        }
+        final days = expInfo.consecutiveCheckInDays;
+        if (days != null) {
+          u.consecutiveCheckInDays = days;
+        }
+        final nextEligibleAt = expInfo.nextEligibleAtUtc;
+        if (nextEligibleAt != null) {
+          nextEligibleAtUtc.value = nextEligibleAt;
+        } else if (u.canCheckIn) {
+          nextEligibleAtUtc.value = null;
+        }
+      } catch (_) {
+        // Ignore exp refresh failures; keep user info usable.
+      }
+
       user(u);
       await ensureAuthorForUser(u);
 
-      if (forceAvatarFetch) {
+      // Only fetch avatar if it's still empty after getSelfUserInfo
+      // (getSelfUserInfo already calls _fetchAndSetAvatar)
+      if (forceAvatarFetch && u.avatar.isEmpty) {
         final id = authorId.value ?? u.authorId;
         if (id != null && id.isNotEmpty) {
           try {
             final url = await api.getAuthorAvatarUrl(id);
             if (url != null && url.isNotEmpty) {
-              u.avatar = _withCacheBuster(url);
+              u.avatar = url;
             }
           } catch (_) {
             // Ignore forbidden or missing permission.
@@ -176,6 +294,7 @@ class Controller extends GetxController {
       logger.e('Failed to refresh self user info', error: e);
     }
   }
+
 
   void _loadLocalCaches() {
     final read = box.read<Map>(_localReadCacheKey);
@@ -250,6 +369,8 @@ class Controller extends GetxController {
   @override
   void onClose() {
     _newPostCheckTimer?.cancel();
+    _clearInsertedPostsTimer?.cancel();
+    _cancelCheckInEligibilityTimer();
     super.onClose();
   }
 
@@ -272,6 +393,7 @@ class Controller extends GetxController {
         box.remove('userId');
       }
     });
+    ever<DateTime?>(nextEligibleAtUtc, _scheduleCheckInEligibilityRefresh);
     logger.i(isLogin());
     accelerator(pref.getString('accelerator') ?? '');
     ever(accelerator, (v) => pref.setString('accelerator', v));
@@ -283,6 +405,7 @@ class Controller extends GetxController {
       try {
         await refreshSelfUserInfo();
         await refreshFavorites();
+        await refreshUnreadNotificationCount();
       } catch (e) {
         // Handle 401 explicitly if it bubbles up, though BaseConnect usually handles it globally.
         // But here we want to show a specific message "Account not found or abnormal".
@@ -310,6 +433,7 @@ class Controller extends GetxController {
             isLogin(true);
             await refreshSelfUserInfo();
             await refreshFavorites();
+            await refreshUnreadNotificationCount();
             // Clear pending credentials
             box.remove('pending_activation_email');
             box.remove('pending_activation_password');
@@ -324,21 +448,28 @@ class Controller extends GetxController {
 
     ever(isLogin, (v) async {
       if (v) {
-        // fetch user info if not present
+        _scheduleCheckInEligibilityRefresh(nextEligibleAtUtc.value);
+        // Only fetch if user info is missing (e.g., after manual login action)
+        // Initial login in onInit already handles data fetching
         if (user.value == null) {
           try {
             await refreshSelfUserInfo();
             await refreshFavorites();
+            await refreshUnreadNotificationCount();
           } catch (e) {
             logger.e('Failed to fetch user after login', error: e);
           }
-        } else {
-          await refreshFavorites();
         }
+        // Note: Removed redundant refreshFavorites/refreshUnreadNotificationCount
+        // when user.value exists, as they're already called during login
       } else {
         final u = user.value;
         user.value = null;
         authorId.value = null;
+        nextEligibleAtUtc.value = null;
+        _cancelCheckInEligibilityTimer();
+        clearUnreadNotificationCount();
+        myDiscussionsCount.value = 0;
         _clearCachedAvatarForUser(u);
         box.remove('access_token');
         bookmarks.clear();
@@ -386,11 +517,16 @@ class Controller extends GetxController {
       isSearching(false);
     }
     history.addAll(pref
-            .getStringList('history')
+            .getStringList(_historyKey)
             ?.map((e) =>
                 HDataModel.fromJson(jsonDecode(e) as Map<String, dynamic>))
             .cast<HDataModel>() ??
         []);
+    debounce(
+      history,
+      (_) => _saveHistoryToLocal(),
+      time: 800.ms,
+    );
 
     // Reports and Version
     // api.getAllReports...
@@ -404,6 +540,22 @@ class Controller extends GetxController {
     _newPostCheckTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
       _checkNewPosts();
     });
+  }
+
+  void _markNewlyInsertedPosts(Iterable<HDataModel> posts) {
+    final ids = posts
+        .map((e) => e.id)
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    _clearInsertedPostsTimer?.cancel();
+    newlyInsertedPostIds.assignAll(ids);
+
+    if (ids.isNotEmpty) {
+      _clearInsertedPostsTimer = Timer(const Duration(milliseconds: 1100), () {
+        newlyInsertedPostIds.clear();
+      });
+    }
   }
 
   Future<void> _checkNewPosts() async {
@@ -456,10 +608,71 @@ class Controller extends GetxController {
   }
 
   Future<void> showNewPosts() async {
-    newPostCount.value = 0;
-    hasContentChange.value = false;
-    // Scroll to top is handled in UI usually, but refresh data here
-    await refreshSearchData();
+    // Only applies to default feed mode.
+    if (searchQuery.isNotEmpty) {
+      await refreshSearchData();
+      return;
+    }
+
+    // Reset timer to avoid polling conflicts while inserting new items.
+    _startNewPostCheck();
+    isSearching(true);
+    try {
+      final pagination = await api.search('', '');
+      final existingIds = searchResult.map((e) => e.id).toSet();
+      final inserted = pagination.nodes
+          .where((e) => e.id.isNotEmpty && !existingIds.contains(e.id))
+          .toList(growable: false);
+
+      // Prepend latest first-page items while preserving current list,
+      // so UI won't flash empty and feels smoother.
+      final merged = <HDataModel>{};
+      merged.addAll(pagination.nodes);
+      merged.addAll(searchResult);
+      searchResult.assignAll(merged);
+      _markNewlyInsertedPosts(inserted);
+
+      // Keep pagination progress if user has already loaded more pages.
+      if (searchEndCur == null || searchEndCur!.isEmpty) {
+        searchEndCur = pagination.endCursor;
+        searchHasNextPage.value = pagination.hasNextPage;
+      }
+
+      // Keep offline cache in sync with latest merged list.
+      try {
+        final cacheList = searchResult.map((e) => e.toJson()).toList();
+        box.write(_searchCacheKey, cacheList);
+      } catch (e) {
+        logger.e('Failed to save offline cache', error: e);
+      }
+
+      newPostCount.value = 0;
+      hasContentChange.value = false;
+    } finally {
+      isSearching(false);
+    }
+  }
+
+  Future<void> refreshUnreadNotificationCount() async {
+    if (!isLogin.value) {
+      unreadNotificationCount.value = 0;
+      return;
+    }
+    try {
+      final count = await api.getUnreadNotificationCount();
+      unreadNotificationCount.value = count;
+    } catch (_) {
+      // Keep current unread count on transient failures.
+    }
+  }
+
+  void decrementUnreadNotificationCount({int by = 1}) {
+    final next = unreadNotificationCount.value - by;
+    unreadNotificationCount.value = next < 0 ? 0 : next;
+  }
+
+  void clearUnreadNotificationCount() {
+    unreadNotificationCount.value = 0;
   }
 
   Future<void> refreshFavorites() async {
@@ -559,6 +772,8 @@ class Controller extends GetxController {
       searchEndCur = null;
       searchCache.clear();
       HDataModel.discussionsCache.clear(); // 清空详情缓存
+      _clearInsertedPostsTimer?.cancel();
+      newlyInsertedPostIds.clear();
       searchResult.clear();
       newPostCount.value = 0;
       hasContentChange.value = false;
@@ -681,6 +896,7 @@ class Controller extends GetxController {
       );
       final current = user.value;
       if (current != null && avatarUrl != null && avatarUrl.isNotEmpty) {
+        // Keep cache buster for uploaded avatar to force refresh
         final refreshed = _withCacheBuster(avatarUrl);
         current.avatar = refreshed;
         _cacheAvatarForUser(current, refreshed);

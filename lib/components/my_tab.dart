@@ -10,14 +10,16 @@ class MyTab extends StatelessWidget {
     required this.onTap,
     this.first = false,
     this.last = false,
+    this.middle = false,
     this.isSelected = false,
     this.trailing,
-  }) : assert(first && !last || !first && last || !first && !last);
+  });
 
   final String text;
   final void Function() onTap;
   final bool first;
   final bool last;
+  final bool middle;
   final bool isSelected;
   final Widget? trailing;
 
@@ -34,6 +36,7 @@ class MyTab extends StatelessWidget {
               child: TabHighlight(
                 isFirst: first,
                 isLast: last,
+                isMiddle: middle,
               ),
             ),
           Padding(

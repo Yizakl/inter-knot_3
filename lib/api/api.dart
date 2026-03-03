@@ -494,6 +494,39 @@ class Api extends BaseConnect {
     await post('/api/articles/$id/view', {});
   }
 
+  Future<({
+    int exp,
+    int level,
+    String? lastCheckInDate,
+    int? consecutiveCheckInDays,
+    DateTime? nextEligibleAtUtc,
+    bool canCheckIn,
+  })> getMyExp() async {
+    final res = await get('/api/me/exp');
+
+    if (res.hasError) {
+      throw ApiException(res.statusText ?? 'Failed to fetch exp',
+          statusCode: res.statusCode, details: res.bodyString);
+    }
+
+    final body = res.body;
+    if (body is! Map) {
+      throw ApiException('Invalid exp response');
+    }
+
+    return (
+      exp: (body['exp'] as num?)?.toInt() ?? 0,
+      level: (body['level'] as num?)?.toInt() ?? 1,
+      lastCheckInDate: body['lastCheckInDate']?.toString(),
+      consecutiveCheckInDays: (body['consecutiveCheckInDays'] as num?)?.toInt(),
+      nextEligibleAtUtc: DateTime.tryParse(
+        body['nextEligibleAt']?.toString() ?? '',
+      )
+          ?.toUtc(),
+      canCheckIn: body['canCheckIn'] as bool? ?? true,
+    );
+  }
+
   Future<PaginationModel<HDataModel>> search(
       String query, String endCur) async {
     final start = int.tryParse(endCur.isEmpty ? '0' : endCur) ?? 0;
@@ -994,6 +1027,9 @@ class Api extends BaseConnect {
     return createAuthor(name: name, ensureUniqueSlug: true);
   }
 
+  Future<Response<Map<String, dynamic>>> deleteComment(String id) =>
+      delete('/api/comments/$id');
+
   Future<Response<Map<String, dynamic>>> deleteDiscussion(String id) =>
       delete('/api/articles/$id');
 
@@ -1148,19 +1184,39 @@ class Api extends BaseConnect {
     }
   }
 
-  Future<({String message, int? reward, int? consecutiveDays})>
+  Future<({
+    String message,
+    int? reward,
+    int? consecutiveDays,
+    int? rank,
+    int? currentExp,
+    int? currentLevel,
+  })>
       checkIn() async {
     final res = await post('/api/check-in', {});
 
     if (res.hasError) {
       String errorMessage = '签到失败';
+      dynamic details;
       if (res.body is Map) {
         final error = res.body['error'];
-        if (error is Map && error['message'] == 'Already checked in today.') {
-          errorMessage = '今日已签到';
+        if (error is Map) {
+          final code = error['code']?.toString();
+          details = error['details'];
+
+          if (code == 'CHECK_IN_ALREADY_TODAY') {
+            errorMessage = '今日已签到';
+          } else if (error['message'] == 'Already checked in today.') {
+            // Backward compatibility for old backend message.
+            errorMessage = '今日已签到';
+          }
         }
       }
-      throw ApiException(errorMessage);
+      throw ApiException(
+        errorMessage,
+        statusCode: res.statusCode,
+        details: details,
+      );
     }
 
     final body = res.body as Map<String, dynamic>;
@@ -1168,6 +1224,9 @@ class Api extends BaseConnect {
       message: body['message'] as String? ?? '签到成功',
       reward: body['reward'] as int?,
       consecutiveDays: body['consecutiveDays'] as int?,
+      rank: (body['rank'] as num?)?.toInt(),
+      currentExp: (body['currentExp'] as num?)?.toInt(),
+      currentLevel: (body['currentLevel'] as num?)?.toInt(),
     );
   }
 
@@ -1266,5 +1325,94 @@ class Api extends BaseConnect {
     }
 
     return null;
+  }
+
+  Future<int> getUnreadNotificationCount() async {
+    try {
+      final res = await get('/api/notifications/unread-count');
+      if (res.hasError) {
+        debugPrint('GetUnreadCount Error: ${res.statusCode} - ${res.bodyString}');
+        if (res.statusCode == 403) {
+          debugPrint('Permission denied. Make sure user is logged in and has proper permissions.');
+        }
+        return 0;
+      }
+      final body = res.body;
+      if (body is Map<String, dynamic>) {
+        return body['count'] as int? ?? 0;
+      }
+      return 0;
+    } catch (e) {
+      debugPrint('GetUnreadCount Exception: $e');
+      return 0;
+    }
+  }
+
+  Future<PaginationModel<dynamic>> getNotifications(String endCur) async {
+    final start = int.tryParse(endCur.isEmpty ? '0' : endCur) ?? 0;
+
+    final queryParams = {
+      'start': start.toString(),
+      'limit': ApiConfig.defaultPageSize.toString(),
+    };
+
+    try {
+      final res = await get(
+        '/api/notifications/list',
+        query: queryParams,
+      );
+
+      if (res.hasError) {
+        debugPrint('GetNotifications Error: ${res.statusCode} - ${res.bodyString}');
+        if (res.statusCode == 403) {
+          throw ApiException('没有权限访问通知', statusCode: 403);
+        }
+        throw ApiException('获取通知失败', statusCode: res.statusCode);
+      }
+
+      final data = unwrapData<List<dynamic>>(res);
+      final hasNext = data.length >= ApiConfig.defaultPageSize;
+
+      return PaginationModel(
+        nodes: data,
+        endCursor: (start + ApiConfig.defaultPageSize).toString(),
+        hasNextPage: hasNext,
+      );
+    } catch (e) {
+      debugPrint('GetNotifications Exception: $e');
+      rethrow;
+    }
+  }
+
+  Future<bool> markNotificationAsRead(String documentId) async {
+    final res = await put(
+      '/api/notifications/$documentId/mark-read',
+      {},
+    );
+    if (res.hasError) {
+      debugPrint('MarkNotificationRead Error: ${res.statusCode} - ${res.bodyString}');
+      return false;
+    }
+    final body = res.body;
+    if (body is Map<String, dynamic>) {
+      return body['success'] == true;
+    }
+    return false;
+  }
+
+  Future<bool> markAllNotificationsAsRead() async {
+    final res = await put(
+      '/api/notifications/mark-all-read',
+      {},
+    );
+    if (res.hasError) {
+      debugPrint('MarkAllNotificationsRead Error: ${res.statusCode} - ${res.bodyString}');
+      return false;
+    }
+    final body = res.body;
+    if (body is Map<String, dynamic>) {
+      return body['success'] == true;
+    }
+    return false;
   }
 }

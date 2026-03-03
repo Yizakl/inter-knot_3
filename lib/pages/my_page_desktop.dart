@@ -89,6 +89,7 @@ class _MyPageDesktopState extends State<MyPageDesktop>
         child: Obx(() {
           final user = c.user.value;
           final isLogin = c.isLogin.value;
+          c.nextEligibleAtUtc.value;
           final dateFormat = DateFormat('yyyy-MM-dd');
           final regTime = user?.createdAt != null
               ? dateFormat.format(user!.createdAt!)
@@ -133,7 +134,7 @@ class _MyPageDesktopState extends State<MyPageDesktop>
                     Row(
                       children: [
                         Text(
-                          user?.name ?? '未登录',
+                          user?.name ?? '绳网用户',
                           style: const TextStyle(
                             fontSize: 28,
                             fontWeight: FontWeight.bold,
@@ -248,6 +249,7 @@ class _MyPageDesktopState extends State<MyPageDesktop>
                 Obx(() => DiscussionGrid(
                       list: c.history(),
                       hasNextPage: false,
+                      reorderHistoryOnOpen: false,
                     )),
               ],
             ),
@@ -284,12 +286,12 @@ class _MyPageDesktopState extends State<MyPageDesktop>
           }
 
           const levelTable = [
-            (level: 6, exp: 3200, title: '不良布'),
-            (level: 5, exp: 1600, title: '恶魔布'),
-            (level: 4, exp: 800, title: '电击布'),
-            (level: 3, exp: 400, title: '招财布'),
-            (level: 2, exp: 200, title: '纸壳布'),
-            (level: 1, exp: 0, title: '纸袋布'),
+            (level: 6, exp: 3200, title: '传奇绳匠'),
+            (level: 5, exp: 1600, title: '精英绳匠'),
+            (level: 4, exp: 800, title: '资深绳匠'),
+            (level: 3, exp: 400, title: '正式绳匠'),
+            (level: 2, exp: 200, title: '见习绳匠'),
+            (level: 1, exp: 0, title: '新手绳匠'),
           ];
 
           final currentLevel = user.level ?? 1;
@@ -365,25 +367,81 @@ class _MyPageDesktopState extends State<MyPageDesktop>
                 minHeight: 8,
                 borderRadius: BorderRadius.circular(4),
               ),
-              const Spacer(),
+              const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
-                child: user.lastCheckInDate !=
-                        DateTime.now().toIso8601String().split('T')[0]
+                child: user.canCheckIn
                     ? ElevatedButton(
                         onPressed: () async {
                           try {
                             final result = await api.checkIn();
-                            await c.refreshSelfUserInfo();
+                            await c.refreshMyExp();
                             if (context.mounted) {
+                              final rank = result.rank;
+                              final reward = result.reward;
+                              final days = result.consecutiveDays;
                               showToast(
-                                '签到成功 +${result.reward}EXP，已连续签到${result.consecutiveDays}天',
+                                '今日签到第${rank ?? "?"}名，经验+${reward ?? 0}，连续签到${days ?? "?"}天',
                               );
                             }
                           } catch (e) {
                             if (context.mounted) {
                               String msg = e.toString();
                               if (e is ApiException) {
+                                if (e.statusCode == 409) {
+                                  final details = e.details;
+                                  String? checkInDay;
+                                  if (details is Map) {
+                                    checkInDay =
+                                        details['checkInDay']?.toString();
+                                    checkInDay = (checkInDay != null &&
+                                            checkInDay.isNotEmpty)
+                                        ? checkInDay
+                                        : null;
+
+                                    checkInDay ??=
+                                        details['checkInDay'.toString()]
+                                            ?.toString();
+
+                                    final nextEligibleAt =
+                                        details['nextEligibleAt']?.toString();
+                                    if (nextEligibleAt != null &&
+                                        nextEligibleAt.isNotEmpty) {
+                                      final dt =
+                                          DateTime.tryParse(nextEligibleAt);
+                                      if (dt != null) {
+                                        c.nextEligibleAtUtc.value = dt.toUtc();
+                                      }
+                                    }
+                                    if (checkInDay == null &&
+                                        nextEligibleAt != null &&
+                                        nextEligibleAt.isNotEmpty) {
+                                      final dt =
+                                          DateTime.tryParse(nextEligibleAt);
+                                      if (dt != null) {
+                                        final utc = dt
+                                            .toUtc()
+                                            .subtract(const Duration(days: 1));
+                                        final y = utc.year
+                                            .toString()
+                                            .padLeft(4, '0');
+                                        final m = utc.month
+                                            .toString()
+                                            .padLeft(2, '0');
+                                        final d = utc.day
+                                            .toString()
+                                            .padLeft(2, '0');
+                                        checkInDay = '$y-$m-$d';
+                                      }
+                                    }
+                                  }
+                                  if (checkInDay != null &&
+                                      checkInDay.isNotEmpty) {
+                                    c.user.value?.lastCheckInDate = checkInDay;
+                                    c.user.refresh();
+                                  }
+                                  await c.refreshMyExp();
+                                }
                                 msg = e.message;
                               }
                               showToast(
@@ -467,7 +525,7 @@ class _MyPageDesktopState extends State<MyPageDesktop>
                   child: Text(
                     text,
                     style: TextStyle(
-                      color: isSelected ? Colors.black : Colors.grey,
+                      color: isSelected ? Colors.black : Colors.white,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -557,6 +615,19 @@ class _MyDiscussionsTabState extends State<_MyDiscussionsTab> {
   @override
   Widget build(BuildContext context) {
     return Obx(() {
+      // Show login prompt if not logged in
+      if (!c.isLogin.value) {
+        return const Center(
+          child: DiscussionEmptyState(
+            message: '请登录后查看',
+            textStyle: TextStyle(
+              color: Color(0xff808080),
+              fontSize: 16,
+            ),
+          ),
+        );
+      }
+      
       return DiscussionGrid(
         list: discussions(),
         hasNextPage: hasNextPage(),
@@ -649,6 +720,19 @@ class _MyFavoritesTabState extends State<_MyFavoritesTab> {
   @override
   Widget build(BuildContext context) {
     return Obx(() {
+      // Show login prompt if not logged in
+      if (!c.isLogin.value) {
+        return const Center(
+          child: DiscussionEmptyState(
+            message: '请登录后查看',
+            textStyle: TextStyle(
+              color: Color(0xff808080),
+              fontSize: 16,
+            ),
+          ),
+        );
+      }
+      
       return DiscussionGrid(
         list: discussions(),
         hasNextPage: hasNextPage(),

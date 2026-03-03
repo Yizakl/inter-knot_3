@@ -4,7 +4,11 @@ import 'dart:ui';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:inter_knot/components/click_region.dart';
+import 'package:inter_knot/gen/assets.gen.dart';
+import 'package:inter_knot/helpers/dialog_helper.dart';
 import 'package:inter_knot/helpers/download_helper.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
@@ -27,17 +31,15 @@ class ImageViewer extends StatefulWidget {
     int initialIndex = 0,
     String? heroTagPrefix,
   }) {
-    Navigator.of(context).push(
-      PageRouteBuilder(
-        opaque: false,
-        pageBuilder: (_, __, ___) => ImageViewer(
+    showZZZDialog(
+      context: context,
+      transitionDuration: const Duration(milliseconds: 260),
+      pageBuilder: (context) => Center(
+        child: ImageViewer(
           imageUrls: imageUrls,
           initialIndex: initialIndex,
           heroTagPrefix: heroTagPrefix,
         ),
-        transitionsBuilder: (_, animation, __, child) {
-          return FadeTransition(opacity: animation, child: child);
-        },
       ),
     );
   }
@@ -46,18 +48,34 @@ class ImageViewer extends StatefulWidget {
   State<ImageViewer> createState() => _ImageViewerState();
 }
 
+class _ImageViewerScrollBehavior extends MaterialScrollBehavior {
+  const _ImageViewerScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.invertedStylus,
+      };
+}
+
 class _ImageViewerState extends State<ImageViewer>
     with TickerProviderStateMixin {
   late final PageController _pageController;
   late final List<PhotoViewController> _photoControllers;
-  late final List<AnimationController> _zoomControllers;
-  late final List<Animation<double>> _zoomAnimations;
+  final List<AnimationController> _zoomControllers = [];
+  final List<Animation<double>> _zoomAnimations = [];
+
+  Ticker? _wheelTicker;
+  Duration? _wheelLast;
+  double _wheelVelocity = 0.0;
   final Map<int, Size> _imageSizes = <int, Size>{};
   final List<ImageStream> _imageStreams = <ImageStream>[];
   final List<ImageStreamListener> _imageStreamListeners =
       <ImageStreamListener>[];
   late int _currentIndex;
-  Offset _dragOffset = Offset.zero;
   bool _showChrome = true;
 
   @override
@@ -69,18 +87,23 @@ class _ImageViewerState extends State<ImageViewer>
       widget.imageUrls.length,
       (_) => PhotoViewController(),
     );
-    _zoomControllers = List<AnimationController>.generate(
-      widget.imageUrls.length,
-      (_) => AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 160),
+    _zoomControllers.addAll(
+      List<AnimationController>.generate(
+        widget.imageUrls.length,
+        (_) => AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 160),
+        ),
       ),
     );
-    _zoomAnimations = List<Animation<double>>.generate(
-      widget.imageUrls.length,
-      (_) => const AlwaysStoppedAnimation<double>(1),
+    _zoomAnimations.addAll(
+      List<Animation<double>>.generate(
+        widget.imageUrls.length,
+        (_) => const AlwaysStoppedAnimation<double>(1),
+      ),
     );
     _resolveImageSizes();
+    _wheelTicker = createTicker(_onWheelTick);
   }
 
   @override
@@ -95,7 +118,49 @@ class _ImageViewerState extends State<ImageViewer>
       controller.dispose();
     }
     _pageController.dispose();
+    _wheelTicker?.dispose();
     super.dispose();
+  }
+
+  void _onWheelTick(Duration elapsed) {
+    if (!mounted) return;
+    final last = _wheelLast;
+    _wheelLast = elapsed;
+    if (last == null) return;
+
+    final dtSeconds = (elapsed - last).inMicroseconds / 1e6;
+    if (dtSeconds <= 0) return;
+
+    final bounds = _scaleBoundsForCurrent();
+    if (bounds == null || _photoControllers.isEmpty) {
+      _wheelVelocity = 0;
+      _wheelTicker?.stop();
+      return;
+    }
+
+    final controller = _photoControllers[_currentIndex];
+    final currentScale = (controller.scale ?? bounds.minScale)
+        .clamp(bounds.minScale, bounds.maxScale);
+
+    if (_wheelVelocity.abs() < 0.02) {
+      _wheelVelocity = 0;
+      _wheelTicker?.stop();
+      return;
+    }
+
+    // Integrate zoom velocity into a scale factor.
+    // Clamp per-frame so it stays stable on low FPS.
+    var factor = math.exp(_wheelVelocity * dtSeconds);
+    factor = factor.clamp(0.92, 1.08);
+
+    final nextScale = (currentScale * factor)
+        .clamp(bounds.minScale, bounds.maxScale)
+        .toDouble();
+    controller.scale = nextScale;
+
+    // Exponential decay (friction). Larger k => faster stop.
+    const k = 9.0;
+    _wheelVelocity *= math.exp(-k * dtSeconds);
   }
 
   void _resolveImageSizes() {
@@ -141,22 +206,6 @@ class _ImageViewerState extends State<ImageViewer>
     setState(() {
       _currentIndex = index;
     });
-  }
-
-  void _handleVerticalDragUpdate(DragUpdateDetails details) {
-    setState(() {
-      _dragOffset += details.delta;
-    });
-  }
-
-  void _handleVerticalDragEnd(DragEndDetails details) {
-    if (_dragOffset.dy.abs() > 100) {
-      Navigator.of(context).pop();
-    } else {
-      setState(() {
-        _dragOffset = Offset.zero;
-      });
-    }
   }
 
   void _toggleChrome() {
@@ -237,26 +286,24 @@ class _ImageViewerState extends State<ImageViewer>
     controller.rotation = controller.rotation + radians;
   }
 
-  ButtonStyle _toolButtonStyle() {
-    const highlightColor = Color(0xffD7FF00);
-    return ButtonStyle(
-      foregroundColor: WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.hovered) ||
-            states.contains(WidgetState.pressed) ||
-            states.contains(WidgetState.focused)) {
-          return highlightColor;
-        }
-        return Colors.white;
-      }),
-      overlayColor: WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.pressed)) {
-          return highlightColor.withValues(alpha: 0.2);
-        }
-        if (states.contains(WidgetState.hovered)) {
-          return highlightColor.withValues(alpha: 0.12);
-        }
-        return Colors.transparent;
-      }),
+  Widget _buildBlurredBackground() {
+    final url = widget.imageUrls[_currentIndex];
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Image(
+          image: _buildImageProvider(url),
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          filterQuality: FilterQuality.low,
+        ),
+        BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 32, sigmaY: 32),
+          child: Container(
+            color: Colors.black.withValues(alpha: 0.55),
+          ),
+        ),
+      ],
     );
   }
 
@@ -265,14 +312,20 @@ class _ImageViewerState extends State<ImageViewer>
     required String label,
     required VoidCallback onPressed,
   }) {
-    return IconButton(
-      tooltip: label,
-      icon: Icon(icon, color: Colors.white, size: 22),
-      onPressed: onPressed,
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints.tightFor(width: 40, height: 40),
-      visualDensity: VisualDensity.compact,
-      style: _toolButtonStyle(),
+    return Tooltip(
+      message: label,
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: const Color(0xff222222),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: const Color(0xff2D2D2D), width: 4),
+        ),
+        child: ClickRegion(
+          onTap: onPressed,
+          child: Icon(icon, color: Colors.white, size: 22),
+        ),
+      ),
     );
   }
 
@@ -281,17 +334,49 @@ class _ImageViewerState extends State<ImageViewer>
     if (bounds == null || _photoControllers.isEmpty) {
       return;
     }
-    final zoomIn = event.scrollDelta.dy < 0;
-    final factor = zoomIn ? 1.1 : 0.9;
-    _zoomBy(factor);
+
+    final dy = event.scrollDelta.dy;
+    if (dy.abs() < 0.01) return;
+
+    // Add impulse to a zoom velocity, then let the ticker apply damping.
+    // Negative dy usually means scrolling up => zoom in.
+    final impulse = (-dy * 0.018).clamp(-1.2, 1.2);
+    _wheelVelocity = (_wheelVelocity + impulse).clamp(-3.0, 3.0);
+
+    if (_wheelTicker != null && !_wheelTicker!.isActive) {
+      _wheelLast = null;
+      _wheelTicker!.start();
+    }
+  }
+
+  void _goToPage(int index, int total) {
+    if (total <= 1) return;
+    final target = index.clamp(0, total - 1);
+    if (target == _currentIndex) return;
+    _pageController.jumpToPage(target);
+  }
+
+  Widget _buildNavButton({
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xff222222),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xff2D2D2D), width: 4),
+      ),
+      child: ClickRegion(
+        onTap: onTap,
+        child: Icon(icon, color: Colors.white, size: 22),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final double dragDistance = _dragOffset.dy.abs();
-    final double opacity = (1 - (dragDistance / 300)).clamp(0.0, 1.0);
-    final double chromeOpacity = _showChrome ? opacity : 0.0;
-    final isWide = MediaQuery.of(context).size.width > 640;
+    final double chromeOpacity = _showChrome ? 1.0 : 0.0;
     final total = widget.imageUrls.length;
 
     void closeViewer() {
@@ -319,227 +404,291 @@ class _ImageViewerState extends State<ImageViewer>
             autofocus: true,
             child: Stack(
               children: [
-                Positioned.fill(
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                    child: Container(
-                      color: Colors.black.withValues(alpha: opacity * 0.2),
+                Container(
+                  margin: EdgeInsets.only(
+                    left: 8,
+                    right: 8,
+                    top: MediaQuery.of(context).padding.top + 8,
+                    bottom: 8,
+                  ),
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(
+                    color: Color.fromARGB(59, 255, 255, 255),
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(16),
+                      bottomLeft: Radius.circular(16),
+                      bottomRight: Radius.circular(16),
                     ),
                   ),
-                ),
-                Listener(
-                  onPointerSignal: (event) {
-                    if (event is PointerScrollEvent) {
-                      _handlePointerScroll(event);
-                    }
-                  },
-                  child: GestureDetector(
-                    onTap: _toggleChrome,
-                    onVerticalDragUpdate: _handleVerticalDragUpdate,
-                    onVerticalDragEnd: _handleVerticalDragEnd,
-                    child: Transform.translate(
-                      offset: _dragOffset,
-                      child: PhotoViewGallery.builder(
-                        scrollPhysics: const BouncingScrollPhysics(),
-                        builder: (BuildContext context, int index) {
-                          final url = widget.imageUrls[index];
-                          final heroTag = widget.heroTagPrefix != null
-                              ? '${widget.heroTagPrefix}-$index'
-                              : url;
-
-                          return PhotoViewGalleryPageOptions(
-                            imageProvider: _buildImageProvider(url),
-                            initialScale: PhotoViewComputedScale.contained,
-                            minScale: PhotoViewComputedScale.contained,
-                            maxScale: PhotoViewComputedScale.covered * 2,
-                            filterQuality: FilterQuality.medium,
-                            heroAttributes:
-                                PhotoViewHeroAttributes(tag: heroTag),
-                            controller: _photoControllers[index],
-                            errorBuilder: (context, error, stackTrace) {
-                              return const Center(
-                                child: Icon(Icons.broken_image,
-                                    color: Colors.white),
-                              );
-                            },
-                          );
-                        },
-                        itemCount: widget.imageUrls.length,
-                        loadingBuilder: (context, event) => Center(
-                          child: SizedBox(
-                            width: 20.0,
-                            height: 20.0,
-                            child: CircularProgressIndicator(
-                              value: event == null
-                                  ? 0
-                                  : event.cumulativeBytesLoaded /
-                                      (event.expectedTotalBytes ?? 1),
-                            ),
-                          ),
-                        ),
-                        backgroundDecoration:
-                            const BoxDecoration(color: Colors.transparent),
-                        pageController: _pageController,
-                        onPageChanged: _onPageChanged,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: const BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.only(
+                        topLeft: Radius.circular(16),
+                        bottomLeft: Radius.circular(16),
+                        bottomRight: Radius.circular(16),
                       ),
                     ),
-                  ),
-                ),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: IgnorePointer(
-                    ignoring: chromeOpacity == 0.0,
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 200),
-                      opacity: chromeOpacity,
-                      child: SafeArea(
-                        bottom: false,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          color: Colors.black54,
-                          child: Row(
-                            children: [
-                              const SizedBox(width: 48),
-                              Expanded(
-                                child: Text(
-                                  '${_currentIndex + 1} / $total',
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w600,
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(16),
+                        bottomLeft: Radius.circular(16),
+                        bottomRight: Radius.circular(16),
+                      ),
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              image: DecorationImage(
+                                image: Assets.images.discussionPageBgPoint
+                                    .provider(),
+                                repeat: ImageRepeat.repeat,
+                              ),
+                              gradient: const LinearGradient(
+                                colors: [Color(0xff161616), Color(0xff080808)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomLeft,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${_currentIndex + 1} / $total',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                 ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.close,
-                                    color: Colors.white, size: 24),
-                                onPressed: closeViewer,
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints.tightFor(
-                                    width: 48, height: 48),
-                                visualDensity: VisualDensity.compact,
-                                style: _toolButtonStyle(),
-                              ),
-                            ],
+                                ClickRegion(
+                                  child: Assets.images.closeBtn.image(),
+                                  onTap: closeViewer,
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
+                          Expanded(
+                            child: Stack(
+                              children: [
+                                // ── Blurred background (current image, cover-fit + blur) ──
+                                Positioned.fill(
+                                  child: ClipRect(
+                                    child: _buildBlurredBackground(),
+                                  ),
+                                ),
+                                Positioned.fill(
+                                  child: Listener(
+                                    onPointerSignal: (event) {
+                                      if (event is PointerScrollEvent) {
+                                        _handlePointerScroll(event);
+                                      }
+                                    },
+                                    child: GestureDetector(
+                                      onTap: _toggleChrome,
+                                      child: Padding(
+                                        padding: const EdgeInsets.only(
+                                          top: 12,
+                                          bottom: 68,
+                                        ),
+                                        child: ScrollConfiguration(
+                                          behavior:
+                                              const _ImageViewerScrollBehavior(),
+                                          child: PhotoViewGallery.builder(
+                                            scrollPhysics:
+                                                const PageScrollPhysics(),
+                                            builder: (BuildContext context,
+                                                int index) {
+                                              final url =
+                                                  widget.imageUrls[index];
+                                              final heroTag =
+                                                  widget.heroTagPrefix != null
+                                                      ? '${widget.heroTagPrefix}-$index'
+                                                      : url;
+
+                                              return PhotoViewGalleryPageOptions(
+                                                imageProvider:
+                                                    _buildImageProvider(url),
+                                                initialScale:
+                                                    PhotoViewComputedScale
+                                                        .contained,
+                                                minScale:
+                                                    PhotoViewComputedScale
+                                                        .contained,
+                                                maxScale:
+                                                    PhotoViewComputedScale
+                                                            .covered *
+                                                        2,
+                                                filterQuality:
+                                                    FilterQuality.medium,
+                                                heroAttributes:
+                                                    PhotoViewHeroAttributes(
+                                                        tag: heroTag),
+                                                controller:
+                                                    _photoControllers[index],
+                                                errorBuilder: (context, error,
+                                                    stackTrace) {
+                                                  return const Center(
+                                                    child: Icon(
+                                                      Icons.broken_image,
+                                                      color: Colors.white,
+                                                    ),
+                                                  );
+                                                },
+                                              );
+                                            },
+                                            itemCount:
+                                                widget.imageUrls.length,
+                                            loadingBuilder:
+                                                (context, event) => Center(
+                                              child: SizedBox(
+                                                width: 20.0,
+                                                height: 20.0,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                  value: event == null
+                                                      ? 0
+                                                      : event
+                                                              .cumulativeBytesLoaded /
+                                                          (event.expectedTotalBytes ??
+                                                              1),
+                                                ),
+                                              ),
+                                            ),
+                                            backgroundDecoration:
+                                                const BoxDecoration(
+                                                    color:
+                                                        Colors.transparent),
+                                            pageController: _pageController,
+                                            onPageChanged: _onPageChanged,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                if (total > 1)
+                                  Positioned(
+                                    left: 12,
+                                    top: 0,
+                                    bottom: 0,
+                                    child: IgnorePointer(
+                                      ignoring: chromeOpacity == 0.0,
+                                      child: AnimatedOpacity(
+                                        duration:
+                                            const Duration(milliseconds: 180),
+                                        opacity: chromeOpacity,
+                                        child: Align(
+                                          alignment: Alignment.centerLeft,
+                                          child: _buildNavButton(
+                                            icon: Icons.chevron_left,
+                                            onTap: () => _goToPage(
+                                                _currentIndex - 1, total),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (total > 1)
+                                  Positioned(
+                                    right: 12,
+                                    top: 0,
+                                    bottom: 0,
+                                    child: IgnorePointer(
+                                      ignoring: chromeOpacity == 0.0,
+                                      child: AnimatedOpacity(
+                                        duration:
+                                            const Duration(milliseconds: 180),
+                                        opacity: chromeOpacity,
+                                        child: Align(
+                                          alignment: Alignment.centerRight,
+                                          child: _buildNavButton(
+                                            icon: Icons.chevron_right,
+                                            onTap: () => _goToPage(
+                                                _currentIndex + 1, total),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                Positioned(
+                                  left: 0,
+                                  right: 0,
+                                  bottom: 0,
+                                  child: IgnorePointer(
+                                    ignoring: chromeOpacity == 0.0,
+                                    child: AnimatedOpacity(
+                                      duration:
+                                          const Duration(milliseconds: 180),
+                                      opacity: chromeOpacity,
+                                      child: Container(
+                                        height: 56,
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 6),
+                                        decoration: const BoxDecoration(
+                                          color: Color(0xff121212),
+                                          border: Border(
+                                            top: BorderSide(
+                                              color: Color(0xff313132),
+                                            ),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            _buildToolButton(
+                                              icon: Icons.file_download,
+                                              label: '下载',
+                                              onPressed: () {
+                                                DownloadHelper.downloadImage(
+                                                    widget.imageUrls[
+                                                        _currentIndex]);
+                                              },
+                                            ),
+                                            const SizedBox(width: 8),
+                                            _buildToolButton(
+                                              icon: Icons.zoom_out,
+                                              label: '缩小',
+                                              onPressed: () => _zoomBy(0.9),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            _buildToolButton(
+                                              icon: Icons.zoom_in,
+                                              label: '放大',
+                                              onPressed: () => _zoomBy(1.1),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            _buildToolButton(
+                                              icon: Icons.refresh,
+                                              label: '复位',
+                                              onPressed: _resetScale,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            _buildToolButton(
+                                              icon: Icons.rotate_right,
+                                              label: '反转',
+                                              onPressed: () =>
+                                                  _rotateBy(math.pi / 2),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  child: IgnorePointer(
-                    ignoring: chromeOpacity == 0.0,
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 200),
-                      opacity: chromeOpacity,
-                      child: SafeArea(
-                        top: false,
-                        child: Container(
-                          height: 56,
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          color: Colors.black54,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              _buildToolButton(
-                                icon: Icons.file_download,
-                                label: '下载',
-                                onPressed: () {
-                                  DownloadHelper.downloadImage(
-                                      widget.imageUrls[_currentIndex]);
-                                },
-                              ),
-                              const SizedBox(width: 10),
-                              _buildToolButton(
-                                icon: Icons.zoom_out,
-                                label: '缩小',
-                                onPressed: () => _zoomBy(0.9),
-                              ),
-                              const SizedBox(width: 10),
-                              _buildToolButton(
-                                icon: Icons.zoom_in,
-                                label: '放大',
-                                onPressed: () => _zoomBy(1.1),
-                              ),
-                              const SizedBox(width: 10),
-                              _buildToolButton(
-                                icon: Icons.refresh,
-                                label: '复位',
-                                onPressed: _resetScale,
-                              ),
-                              const SizedBox(width: 10),
-                              _buildToolButton(
-                                icon: Icons.rotate_right,
-                                label: '反转',
-                                onPressed: () => _rotateBy(math.pi / 2),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                if (isWide && total > 1)
-                  Positioned.fill(
-                    left: 8,
-                    child: IgnorePointer(
-                      ignoring: chromeOpacity == 0.0,
-                      child: AnimatedOpacity(
-                        duration: const Duration(milliseconds: 200),
-                        opacity: chromeOpacity,
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: IconButton(
-                            icon: const Icon(Icons.chevron_left,
-                                color: Colors.white),
-                            onPressed: () {
-                              final target =
-                                  (_currentIndex - 1).clamp(0, total - 1);
-                              _pageController.animateToPage(
-                                target,
-                                duration: const Duration(milliseconds: 200),
-                                curve: Curves.easeOut,
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                if (isWide && total > 1)
-                  Positioned.fill(
-                    right: 8,
-                    child: IgnorePointer(
-                      ignoring: chromeOpacity == 0.0,
-                      child: AnimatedOpacity(
-                        duration: const Duration(milliseconds: 200),
-                        opacity: chromeOpacity,
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: IconButton(
-                            icon: const Icon(Icons.chevron_right,
-                                color: Colors.white),
-                            onPressed: () {
-                              final target =
-                                  (_currentIndex + 1).clamp(0, total - 1);
-                              _pageController.animateToPage(
-                                target,
-                                duration: const Duration(milliseconds: 200),
-                                curve: Curves.easeOut,
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
               ],
             ),
           ),

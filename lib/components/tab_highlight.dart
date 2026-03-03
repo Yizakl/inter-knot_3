@@ -6,10 +6,12 @@ class TabHighlight extends StatefulWidget {
     super.key,
     this.isFirst = false,
     this.isLast = false,
+    this.isMiddle = false,
   });
 
   final bool isFirst;
   final bool isLast;
+  final bool isMiddle;
 
   @override
   State<TabHighlight> createState() => _TabHighlightState();
@@ -101,6 +103,7 @@ class _TabHighlightState extends State<TabHighlight>
               color: _colorAnimation.value ?? const Color(0xfffbfe00),
               isFirst: widget.isFirst,
               isLast: widget.isLast,
+              isMiddle: widget.isMiddle,
             ),
           ),
         );
@@ -113,11 +116,13 @@ class _TabHighlightPainter extends CustomPainter {
   final Color color;
   final bool isFirst;
   final bool isLast;
+  final bool isMiddle;
 
   _TabHighlightPainter({
     required this.color,
     required this.isFirst,
     required this.isLast,
+    this.isMiddle = false,
   });
 
   @override
@@ -146,7 +151,92 @@ class _TabHighlightPainter extends CustomPainter {
     const double crTop = 10.0; // Corner radius for top-right side
     const double crBottom = 16.0; // Larger corner radius for bottom-right side
 
-    if (isLast) {
+    if (isMiddle) {
+      // "消息" Tab (中间): 双侧斜边，右上右下保持不变，左上=右下，左下=右上
+      
+      // 左侧斜边顶点
+      final double topLeftX = slantWidth / 2;
+      final double bottomLeftX = -slantWidth / 2;
+      
+      // 右侧斜边顶点
+      final double topRightX = w + slantWidth / 2;
+      final double bottomRightX = w - slantWidth / 2;
+      
+      // 圆角半径：左上=右下(crBottom)，左下=右上(crTop)，右上=crTop，右下=crBottom
+      final double crLeftTop = crBottom;    // 左上 = 右下
+      final double crLeftBottom = crTop;     // 左下 = 右上
+      final double crRightTop = crTop;       // 右上保持
+      final double crRightBottom = crBottom; // 右下保持
+      
+      // 角度计算
+      final double angleTL = (90 + 27) * pi / 180; // 左上钝角
+      final double angleBL = (90 - 27) * pi / 180; // 左下锐角
+      final double angleTR = (90 - 27) * pi / 180; // 右上锐角
+      final double angleBR = (90 + 27) * pi / 180; // 右下钝角
+      
+      // 切线距离
+      final double tanDistTL = crLeftTop / tan(angleTL / 2);
+      final double tanDistBL = crLeftBottom / tan(angleBL / 2);
+      final double tanDistTR = crRightTop / tan(angleTR / 2);
+      final double tanDistBR = crRightBottom / tan(angleBR / 2);
+      
+      // 左侧斜边的归一化向量（从下到上）
+      final double dxLeft = slantWidth;
+      final double dyLeft = -h;
+      final double lenLeft = sqrt(dxLeft * dxLeft + dyLeft * dyLeft);
+      final double ndxLeft = dxLeft / lenLeft;
+      final double ndyLeft = dyLeft / lenLeft;
+      
+      // 右侧斜边的归一化向量（从上到下）
+      final double dxRight = -slantWidth;
+      final double dyRight = h;
+      final double lenRight = sqrt(dxRight * dxRight + dyRight * dyRight);
+      final double ndxRight = dxRight / lenRight;
+      final double ndyRight = dyRight / lenRight;
+      
+      // 开始绘制路径（从右上角开始，顺时针）
+      path.moveTo(topRightX - tanDistTR, 0);
+      
+      // 1. 右上角圆角
+      path.arcToPoint(
+        Offset(topRightX + ndxRight * tanDistTR, 0 + ndyRight * tanDistTR),
+        radius: Radius.circular(crRightTop),
+        clockwise: true,
+      );
+      
+      // 2. 右侧斜边到右下角
+      path.lineTo(bottomRightX - ndxRight * tanDistBR, h - ndyRight * tanDistBR);
+      
+      // 3. 右下角圆角
+      path.arcToPoint(
+        Offset(bottomRightX - tanDistBR, h),
+        radius: Radius.circular(crRightBottom),
+        clockwise: true,
+      );
+      
+      // 4. 底边到左下角
+      path.lineTo(bottomLeftX + tanDistBL, h);
+      
+      // 5. 左下角圆角
+      path.arcToPoint(
+        Offset(bottomLeftX + ndxLeft * tanDistBL, h + ndyLeft * tanDistBL),
+        radius: Radius.circular(crLeftBottom),
+        clockwise: true,
+      );
+      
+      // 6. 左侧斜边到左上角
+      path.lineTo(topLeftX - ndxLeft * tanDistTL, 0 - ndyLeft * tanDistTL);
+      
+      // 7. 左上角圆角
+      path.arcToPoint(
+        Offset(topLeftX + tanDistTL, 0),
+        radius: Radius.circular(crLeftTop),
+        clockwise: true,
+      );
+      
+      // 8. 顶边闭合
+      path.close();
+    } else if (isLast) {
       // "My" Tab: Left Skewed, Right Rounded
 
       // Vertices of the skewed left side (before rounding)
@@ -161,11 +251,12 @@ class _TabHighlightPainter extends CustomPainter {
       final double angleBL = (90 - 27) * pi / 180;
 
       // Tangent Distances
-      // Use crTop for Top Corner, but reduce crBottom for Bottom Corner to make it sharper (less rounded) as requested.
-      // "don't make it so rounded" -> smaller radius.
+      // 左上角使用crBottom（16px），与消息Tab的右下角一致
+      // 左下角使用较小的圆角（8px）
       final double customCrBottom = 8.0;
+      final double customCrTop = crBottom; // 左上角 = 16px
 
-      final double tanDistTL = crTop / tan(angleTL / 2);
+      final double tanDistTL = customCrTop / tan(angleTL / 2);
       final double tanDistBL = customCrBottom / tan(angleBL / 2);
 
       // Normalized vector for the slanted line (from bottom-left to top-left)
@@ -204,7 +295,7 @@ class _TabHighlightPainter extends CustomPainter {
       // End point on top line: Vertex + (tanDistTL, 0)
       path.arcToPoint(
         Offset(topLeftX + tanDistTL, 0),
-        radius: const Radius.circular(crTop),
+        radius: Radius.circular(customCrTop),
         clockwise: true, // Up-Right -> Right. Clockwise.
       );
 
@@ -275,6 +366,7 @@ class _TabHighlightPainter extends CustomPainter {
   bool shouldRepaint(covariant _TabHighlightPainter oldDelegate) {
     return color != oldDelegate.color ||
         isFirst != oldDelegate.isFirst ||
-        isLast != oldDelegate.isLast;
+        isLast != oldDelegate.isLast ||
+        isMiddle != oldDelegate.isMiddle;
   }
 }

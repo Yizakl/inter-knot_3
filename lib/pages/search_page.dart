@@ -115,61 +115,100 @@ class _SearchPageState extends State<SearchPage>
                     child: Obx(() {
                       final count = c.newPostCount.value;
                       final hasChange = c.hasContentChange.value;
-
-                      if (count == 0 && !hasChange)
-                        return const SizedBox.shrink();
+                      final shouldShow = count > 0 || hasChange;
 
                       String message = '帖子列表有更新';
                       if (count > 0) {
                         message = '有 $count 个新帖子';
                       }
 
-                      return Center(
-                        child: Material(
-                          color: const Color(0xffD7FF00),
-                          borderRadius: BorderRadius.circular(20),
-                          elevation: 4,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(20),
-                            onTap: () async {
-                              await c.showNewPosts();
-                              // Ensure layout is built before scrolling
-                              WidgetsBinding.instance.addPostFrameCallback((_) {
-                                if (_scrollController.hasClients) {
-                                  _scrollController.animateTo(
-                                    0,
-                                    duration: const Duration(milliseconds: 500),
-                                    curve: Curves.easeOutQuart,
-                                  );
-                                }
-                              });
-                            },
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 8,
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(
-                                    Icons.arrow_upward,
-                                    size: 16,
-                                    color: Colors.black,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    message,
-                                    style: const TextStyle(
-                                      color: Colors.black,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
+                      return AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 320),
+                        reverseDuration: const Duration(milliseconds: 220),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, animation) {
+                          final slide = Tween<Offset>(
+                            begin: const Offset(0, -0.2),
+                            end: Offset.zero,
+                          ).animate(CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeOutCubic,
+                          ));
+                          final scale = Tween<double>(
+                            begin: 0.96,
+                            end: 1.0,
+                          ).animate(CurvedAnimation(
+                            parent: animation,
+                            curve: Curves.easeOutBack,
+                          ));
+                          return FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: slide,
+                              child: ScaleTransition(
+                                scale: scale,
+                                child: child,
                               ),
                             ),
-                          ),
-                        ),
+                          );
+                        },
+                        child: shouldShow
+                            ? Center(
+                                key: ValueKey('new-post-banner-$count-$hasChange'),
+                                child: Material(
+                                  color: const Color(0xffD7FF00),
+                                  borderRadius: BorderRadius.circular(24),
+                                  elevation: 10,
+                                  shadowColor: const Color(0xffD7FF00)
+                                      .withValues(alpha: 0.45),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(24),
+                                    onTap: () async {
+                                      await c.showNewPosts();
+                                      // Ensure layout is built before scrolling
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                        if (_scrollController.hasClients) {
+                                          _scrollController.animateTo(
+                                            0,
+                                            duration: const Duration(
+                                                milliseconds: 500),
+                                            curve: Curves.easeOutQuart,
+                                          );
+                                        }
+                                      });
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 18,
+                                        vertical: 10,
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.north_rounded,
+                                            size: 18,
+                                            color: Colors.black,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            message,
+                                            style: const TextStyle(
+                                              color: Colors.black,
+                                              fontWeight: FontWeight.w900,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : const SizedBox(
+                                key: ValueKey('new-post-banner-hidden'),
+                              ),
                       );
                     }),
                   ),

@@ -52,3 +52,4 @@ app.*.map.json
 lib/secret.dart
 *.md
 API View LLMs/*
+.windsurfrules

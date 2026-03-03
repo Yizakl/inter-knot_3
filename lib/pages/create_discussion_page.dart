@@ -1,25 +1,26 @@
 import 'dart:async';
-
-import 'package:desktop_drop/desktop_drop.dart';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
-import 'package:flutter_quill_extensions/flutter_quill_extensions.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:inter_knot/api/api.dart';
-import 'package:inter_knot/components/avatar.dart';
-import 'package:inter_knot/components/click_region.dart';
-import 'package:inter_knot/components/image_viewer.dart';
 import 'package:inter_knot/controllers/data.dart';
-import 'package:inter_knot/gen/assets.gen.dart';
 import 'package:inter_knot/helpers/dialog_helper.dart';
 import 'package:inter_knot/helpers/drop_zone.dart';
 import 'package:inter_knot/helpers/normalize_markdown.dart';
 import 'package:inter_knot/helpers/toast.dart';
 import 'package:inter_knot/helpers/web_hooks.dart';
 import 'package:markdown_quill/markdown_quill.dart';
+
+import 'package:inter_knot/pages/create_discussion/create_discussion_desktop_footer.dart';
+import 'package:inter_knot/pages/create_discussion/create_discussion_desktop_sidebar.dart';
+import 'package:inter_knot/pages/create_discussion/create_discussion_cover_page.dart';
+import 'package:inter_knot/pages/create_discussion/create_discussion_editor_page.dart';
+import 'package:inter_knot/pages/create_discussion/create_discussion_header.dart';
+import 'package:inter_knot/pages/create_discussion/create_discussion_mobile_nav.dart';
 
 import 'package:inter_knot/models/discussion.dart';
 import 'package:markdown/markdown.dart' as md;
@@ -44,8 +45,13 @@ class CreateDiscussionPage extends StatefulWidget {
 }
 
 class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
+  static const _maxCoverImages = 9;
+  static const _maxImageBytes = 15 * 1024 * 1024;
+  static const _allowedImageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+
   final PageController _pageController = PageController();
   final titleController = TextEditingController();
+  final _mobileBodyController = TextEditingController();
   final _quillController = quill.QuillController.basic();
 
   // Images State
@@ -60,19 +66,19 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
   final c = Get.find<Controller>();
   late final api = Get.find<Api>();
 
-  void _animateToPage(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-    _pageController.jumpToPage(index);
+  bool _isAllowedImageFilename(String filename) {
+    final ext = filename.split('.').last.toLowerCase();
+    return _allowedImageExtensions.contains(ext);
+  }
+
+  String _toFullImageUrl(String url) {
+    return url.startsWith('http') ? url : '${api.httpClient.baseUrl}$url';
   }
 
   /// 设置粘贴事件监听
   void _setupPasteListener() {
     setupPasteListener((filename, bytes, mimeType) {
-      final allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-      final ext = filename.split('.').last.toLowerCase();
-      if (!allowedExtensions.contains(ext)) {
+      if (!_isAllowedImageFilename(filename)) {
         showToast('不支持的文件格式，仅支持 JPEG, PNG, GIF, WEBP', isError: true);
         return;
       }
@@ -110,13 +116,13 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
   Future<void> _handleDroppedImages(
       List<({String filename, Uint8List bytes, String mimeType})> files) async {
     if (_isCoverUploading) return;
-    if (_uploadedImages.length >= 9) {
+    if (_uploadedImages.length >= _maxCoverImages) {
       showToast('最多上传 9 张图片', isError: true);
       return;
     }
 
     // 过滤数量
-    final remaining = 9 - _uploadedImages.length;
+    final remaining = _maxCoverImages - _uploadedImages.length;
     final toUpload = files.take(remaining).toList();
 
     setState(() {
@@ -126,7 +132,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
     try {
       for (final file in toUpload) {
         // 检查大小（15MB）
-        if (file.bytes.length > 15 * 1024 * 1024) {
+        if (file.bytes.length > _maxImageBytes) {
           showToast('图片 ${file.filename} 超过 15MB，已跳过', isError: true);
           continue;
         }
@@ -143,9 +149,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
           final url = result['url'] as String?;
 
           if (id != null && url != null) {
-            final fullUrl =
-                url.startsWith('http') ? url : '${api.httpClient.baseUrl}$url';
-            _uploadedImages.add((id: id.toString(), url: fullUrl));
+            _uploadedImages.add((id: id.toString(), url: _toFullImageUrl(url)));
           }
         }
       }
@@ -208,8 +212,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
       }
 
       // 构建完整 URL
-      final fullUrl =
-          url.startsWith('http') ? url : '${api.httpClient.baseUrl}$url';
+      final fullUrl = _toFullImageUrl(url);
 
       // 使用 Quill Image Embed
       _replaceTokenWithImage(token, fullUrl);
@@ -293,7 +296,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
 
   Future<void> _pickImages() async {
     if (_isCoverUploading) return;
-    if (_uploadedImages.length >= 9) {
+    if (_uploadedImages.length >= _maxCoverImages) {
       showToast('最多上传 9 张图片', isError: true);
       return;
     }
@@ -303,10 +306,8 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
     final files = await picker.pickMultiImage();
     if (files.isEmpty) return;
 
-    final allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
     final validFiles = files.where((file) {
-      final ext = file.name.split('.').last.toLowerCase();
-      return allowedExtensions.contains(ext);
+      return _isAllowedImageFilename(file.name);
     }).toList();
 
     if (validFiles.length != files.length) {
@@ -316,7 +317,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
     if (validFiles.isEmpty) return;
 
     // Filter by count
-    final remaining = 9 - _uploadedImages.length;
+    final remaining = _maxCoverImages - _uploadedImages.length;
     final toUpload = validFiles.take(remaining).toList();
 
     setState(() {
@@ -327,12 +328,18 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
       for (final file in toUpload) {
         // Check size (15MB)
         final len = await file.length();
-        if (len > 15 * 1024 * 1024) {
+        if (len > _maxImageBytes) {
           showToast('图片 ${file.name} 超过 15MB，已跳过', isError: true);
           continue;
         }
 
-        final bytes = await file.readAsBytes();
+        // Read bytes; on native use background isolate to avoid blocking UI
+        final Uint8List bytes;
+        if (kIsWeb) {
+          bytes = await file.readAsBytes();
+        } else {
+          bytes = await compute(_readXFileBytes, file.path);
+        }
         final mimeType = file.mimeType ?? 'image/jpeg';
 
         final result = await api.uploadImage(
@@ -347,19 +354,19 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
           final url = result['url'] as String?;
 
           if (id != null && url != null) {
-            final fullUrl =
-                url.startsWith('http') ? url : '${api.httpClient.baseUrl}$url';
-            _uploadedImages.add((id: id.toString(), url: fullUrl));
+            _uploadedImages.add((id: id.toString(), url: _toFullImageUrl(url)));
           }
         }
       }
     } catch (e) {
       debugPrint('Upload images failed: $e');
-      showToast('上传出错: $e', isError: true);
+      if (mounted) showToast('上传出错: $e', isError: true);
     } finally {
-      setState(() {
-        _isCoverUploading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isCoverUploading = false;
+        });
+      }
     }
   }
 
@@ -368,9 +375,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
     final file = await picker.pickImage(source: ImageSource.gallery);
     if (file == null) return;
 
-    final allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-    final ext = file.name.split('.').last.toLowerCase();
-    if (!allowedExtensions.contains(ext)) {
+    if (!_isAllowedImageFilename(file.name)) {
       showToast('不支持的文件格式，仅支持 JPEG, PNG, GIF, WEBP', isError: true);
       return;
     }
@@ -392,6 +397,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
   void dispose() {
     _pageController.dispose();
     titleController.dispose();
+    _mobileBodyController.dispose();
     _quillController.dispose();
     if (kIsWeb) {
       removePasteListener();
@@ -411,6 +417,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
 
     if (widget.discussion != null) {
       titleController.text = widget.discussion!.title;
+      _mobileBodyController.text = widget.discussion!.rawBodyText;
       // Convert raw markdown to Delta for Quill
       try {
         final mdDocument = md.Document(
@@ -506,10 +513,15 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
     return false;
   }
 
-  Future<void> _submit() async {
+  Future<void> _submit({bool isMobile = false}) async {
     final title = titleController.text.trim();
-    final delta = _quillController.document.toDelta();
-    final markdownText = normalizeMarkdown(DeltaToMarkdown().convert(delta));
+    final String markdownText;
+    if (isMobile) {
+      markdownText = _mobileBodyController.text.trim();
+    } else {
+      final delta = _quillController.document.toDelta();
+      markdownText = normalizeMarkdown(DeltaToMarkdown().convert(delta));
+    }
 
     // Pass all uploaded images as cover
     // If backend supports multiple, we send list.
@@ -528,7 +540,7 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
       return;
     }
     // Content check: either text or images must exist
-    if (markdownText.trim().isEmpty && _uploadedImages.isEmpty) {
+    if (markdownText.isEmpty && _uploadedImages.isEmpty) {
       showToast('内容不能为空', isError: true);
       return;
     }
@@ -654,6 +666,17 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
     final double zoomScale = isWindowed ? 1.1 : 1.0;
     final double layoutFactor = baseFactor * zoomScale;
 
+    // Mobile uses a simple TextField editor; desktop uses the Quill PageView
+    final mobileEditor = CreateDiscussionEditorPage(
+      titleController: titleController,
+      quillController: _quillController,
+      onPickAndUploadImage: _pickAndUploadImage,
+      isMobile: true,
+      mobileBodyController: _mobileBodyController,
+      mobileImages: _uploadedImages,
+      onRemoveMobileImage: (index) => _uploadedImages.removeAt(index),
+    );
+
     final content = PageView(
       scrollDirection: isDesktop ? Axis.vertical : Axis.horizontal,
       physics: const NeverScrollableScrollPhysics(),
@@ -664,222 +687,23 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
         });
       },
       children: [
-        Column(
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(
-                hintText: '标题',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            quill.QuillSimpleToolbar(
-              controller: _quillController,
-              config: quill.QuillSimpleToolbarConfig(
-                showFontFamily: false,
-                showFontSize: false,
-                showSearchButton: false,
-                showSubscript: false,
-                showSuperscript: false,
-                showColorButton: false,
-                showBackgroundColorButton: false,
-                toolbarIconAlignment: WrapAlignment.start,
-                multiRowsDisplay: false,
-                customButtons: [
-                  quill.QuillToolbarCustomButtonOptions(
-                    icon: const Icon(Icons.image),
-                    onPressed: _pickAndUploadImage,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.withValues(alpha: 0.5)),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: quill.QuillEditor.basic(
-                  controller: _quillController,
-                  config: quill.QuillEditorConfig(
-                    placeholder: '请输入文本',
-                    padding: const EdgeInsets.all(16),
-                    embedBuilders: [
-                      ...FlutterQuillEmbeds.editorBuilders(
-                        imageEmbedConfig: QuillEditorImageEmbedConfig(
-                          onImageClicked: (url) {},
-                        ),
-                      ),
-                      const _DividerEmbedBuilder(),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
+        CreateDiscussionEditorPage(
+          titleController: titleController,
+          quillController: _quillController,
+          onPickAndUploadImage: _pickAndUploadImage,
         ),
-        Column(
-          children: [
-            Expanded(
-              child: DropTarget(
-                onDragDone: (detail) async {
-                  final files = detail.files;
-                  if (files.isEmpty) return;
-
-                  final imageFiles = <({String filename, Uint8List bytes, String mimeType})>[];
-                  for (final file in files) {
-                    final mimeType = file.mimeType ?? 'image/jpeg';
-                    if (!mimeType.startsWith('image/')) continue;
-
-                    final bytes = await file.readAsBytes();
-                    imageFiles.add((
-                      filename: file.name,
-                      bytes: bytes,
-                      mimeType: mimeType,
-                    ));
-                  }
-
-                  if (imageFiles.isNotEmpty) {
-                    await _handleDroppedImages(imageFiles);
-                  }
-                },
-                onDragEntered: (_) {
-                  setState(() {
-                    _isDragging = true;
-                  });
-                },
-                onDragExited: (_) {
-                  setState(() {
-                    _isDragging = false;
-                  });
-                },
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: _isDragging
-                          ? const Color(0xffFBC02D)
-                          : Colors.transparent,
-                      width: 2,
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Obx(() {
-                    final images = _uploadedImages;
-                    return GridView.builder(
-                      padding: const EdgeInsets.all(16),
-                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: 160,
-                        mainAxisSpacing: 16,
-                        crossAxisSpacing: 16,
-                      ),
-                      itemCount: images.length + (images.length < 9 ? 1 : 0),
-                      itemBuilder: (context, index) {
-                        if (index == images.length) {
-                          // Add Button
-                          return MouseRegion(
-                            cursor: SystemMouseCursors.click,
-                            child: GestureDetector(
-                              onTap: _pickImages,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  border: Border.all(
-                                    color: _isDragging
-                                        ? const Color(0xffFBC02D)
-                                        : const Color(0xff313132),
-                                    width: 2,
-                                  ),
-                                  borderRadius: BorderRadius.circular(8),
-                                  color: _isDragging
-                                      ? const Color(0xffFBC02D).withValues(alpha: 0.1)
-                                      : const Color(0xff1E1E1E),
-                                ),
-                                child: _isCoverUploading
-                                    ? const Center(
-                                        child: CircularProgressIndicator())
-                                    : Column(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          Icon(
-                                            _isDragging ? Icons.cloud_upload : Icons.add,
-                                            size: 32,
-                                            color: _isDragging
-                                                ? const Color(0xffFBC02D)
-                                                : Colors.grey,
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            _isDragging ? '释放以上传' : '添加图片',
-                                            style: TextStyle(
-                                              color: _isDragging
-                                                  ? const Color(0xffFBC02D)
-                                                  : Colors.grey,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                              ),
-                            ),
-                          );
-                        }
-
-                        final img = images[index];
-                        return Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            MouseRegion(
-                              cursor: SystemMouseCursors.click,
-                              child: GestureDetector(
-                                onTap: () {
-                                  ImageViewer.show(
-                                    context,
-                                    imageUrls: images.map((e) => e.url).toList(),
-                                    initialIndex: index,
-                                  );
-                                },
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: Image.network(
-                                    img.url,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => const Center(
-                                      child: Icon(Icons.broken_image,
-                                          color: Colors.grey),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            // Delete Button
-                            Positioned(
-                              right: 4,
-                              top: 4,
-                              child: InkWell(
-                                onTap: () {
-                                  _uploadedImages.removeAt(index);
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.all(4),
-                                  decoration: const BoxDecoration(
-                                    color: Colors.black54,
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(Icons.close,
-                                      color: Colors.white, size: 16),
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    );
-                  }),
-                ),
-              ),
-            ),
-          ],
+        CreateDiscussionCoverPage(
+          uploadedImages: _uploadedImages,
+          isDragging: _isDragging,
+          isCoverUploading: _isCoverUploading,
+          onPickImages: _pickImages,
+          onRemoveImageAt: (index) => _uploadedImages.removeAt(index),
+          onDroppedImages: _handleDroppedImages,
+          onDraggingChanged: (isDragging) {
+            setState(() {
+              _isDragging = isDragging;
+            });
+          },
         ),
       ],
     );
@@ -888,204 +712,29 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
       backgroundColor: const Color(0xff121212),
       bottomNavigationBar: isDesktop
           ? null
-          : Container(
-              height: 58,
-              decoration: const BoxDecoration(
-                color: Color(0xff1A1A1A),
-                border: Border(
-                  top: BorderSide(
-                    color: Colors.white12,
-                    width: 1,
-                  ),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  Expanded(
-                    child: InkWell(
-                      splashColor: Colors.transparent,
-                      highlightColor: Colors.transparent,
-                      onTap: () => _animateToPage(0),
-                      child: AnimatedScale(
-                        scale: _selectedIndex == 0 ? 1.15 : 1.0,
-                        duration: const Duration(milliseconds: 300),
-                        curve: Curves.easeOutBack,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              _selectedIndex == 0
-                                  ? Icons.article
-                                  : Icons.article_outlined,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(height: 2),
-                            const Text(
-                              '正文',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  Center(
-                    child: Material(
-                      color: const Color(0xffFBC02D),
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        splashColor: Colors.transparent,
-                        highlightColor: Colors.transparent,
-                        customBorder: const CircleBorder(),
-                        onTap: isLoading ? null : _submit,
-                        child: SizedBox(
-                          width: 36,
-                          height: 36,
-                          child: isLoading
-                              ? const CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.black,
-                                )
-                              : const Icon(Icons.send, color: Colors.black),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: InkWell(
-                      splashColor: Colors.transparent,
-                      highlightColor: Colors.transparent,
-                      onTap: () => _animateToPage(1),
-                      child: AnimatedScale(
-                        scale: _selectedIndex == 1 ? 1.15 : 1.0,
-                        duration: const Duration(milliseconds: 300),
-                        curve: Curves.easeOutBack,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              _selectedIndex == 1
-                                  ? Icons.image
-                                  : Icons.image_outlined,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(height: 2),
-                            const Text(
-                              '封面',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+          : Obx(() => CreateDiscussionMobileNav(
+                isLoading: isLoading,
+                onPickImage: _pickImages,
+                onSubmit: () => _submit(isMobile: true),
+                imageCount: _uploadedImages.length,
+              )),
       body: SafeArea(
         child: Column(
           children: [
             // Header
-            Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 8,
-              ),
-              decoration: BoxDecoration(
-                image: DecorationImage(
-                  image: Assets.images.discussionPageBgPoint.provider(),
-                  repeat: ImageRepeat.repeat,
-                ),
-                gradient: const LinearGradient(
-                  colors: [Color(0xff161616), Color(0xff080808)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomLeft,
-                ),
-              ),
-              child: Row(
-                children: [
-                  Obx(() {
-                    final user = c.user.value;
-                    return Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: const Color(0xff2D2D2D),
-                          width: 3,
-                        ),
-                        borderRadius: BorderRadius.circular(100),
-                      ),
-                      child: Avatar(
-                        user?.avatar,
-                        onTap: c.isLogin.value ? c.pickAndUploadAvatar : null,
-                      ),
-                    );
-                  }),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '发布委托',
-                      style: Theme.of(context)
-                          .textTheme
-                          .headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  ClickRegion(
-                    child: Assets.images.closeBtn.image(),
-                    onTap: () => Get.back(),
-                  ),
-                ],
-              ),
+            CreateDiscussionHeader(
+              controller: c,
+              title: '发布委托',
+              onClose: () => Get.back(),
             ),
             // Body
             Expanded(
               child: isDesktop
                   ? Row(
                       children: [
-                        SizedBox(
-                          width: 180,
-                          child: Container(
-                            margin: const EdgeInsets.only(
-                              top: 16,
-                              left: 16,
-                              right: 8,
-                              bottom: 16,
-                            ),
-                            height: double.infinity,
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                color: const Color(0xff313132),
-                                width: 4,
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(16),
-                              child: ListView(
-                                children: [
-                                  ListTile(
-                                    leading: const Icon(Icons.article_outlined),
-                                    title: const Text('正文'),
-                                    selected: _selectedIndex == 0,
-                                    onTap: () => _pageController.jumpToPage(0),
-                                  ),
-                                  ListTile(
-                                    leading: const Icon(Icons.image_outlined),
-                                    title: const Text('封面'),
-                                    selected: _selectedIndex == 1,
-                                    onTap: () => _pageController.jumpToPage(1),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
+                        CreateDiscussionDesktopSidebar(
+                          selectedIndex: _selectedIndex,
+                          onSelectPage: (index) => _pageController.jumpToPage(index),
                         ),
                         Expanded(
                           flex: 9,
@@ -1109,83 +758,16 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
                                   ),
                                 ),
                               ),
-                              Container(
-                                margin: const EdgeInsets.only(
-                                  left: 8,
-                                  right: 16,
-                                  bottom: 16,
-                                ),
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xff070707),
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  children: [
-                                    Material(
-                                      color: const Color(0xff1A1A1A),
-                                      borderRadius: BorderRadius.circular(28),
-                                      child: InkWell(
-                                        borderRadius: BorderRadius.circular(28),
-                                        onTap: isLoading ? null : _submit,
-                                        child: Container(
-                                          height: 56,
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 24),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Container(
-                                                padding:
-                                                    const EdgeInsets.all(4),
-                                                decoration: const BoxDecoration(
-                                                  color: Color(0xffFBC02D),
-                                                  shape: BoxShape.circle,
-                                                ),
-                                                child: isLoading
-                                                    ? const SizedBox(
-                                                        width: 16,
-                                                        height: 16,
-                                                        child:
-                                                            CircularProgressIndicator(
-                                                          strokeWidth: 2,
-                                                          color: Colors.black,
-                                                        ),
-                                                      )
-                                                    : const Icon(
-                                                        Icons.send,
-                                                        color: Colors.black,
-                                                        size: 16,
-                                                      ),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              const Text(
-                                                '发布',
-                                                style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.bold,
-                                                  letterSpacing: 1,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                              CreateDiscussionDesktopFooter(
+                                isLoading: isLoading,
+                                onSubmit: _submit,
                               ),
                             ],
                           ),
                         ),
                       ],
                     )
-                  : Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: content,
-                    ),
+                  : mobileEditor,
             ),
           ],
         ),
@@ -1251,21 +833,6 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
   }
 }
 
-class _DividerEmbedBuilder extends quill.EmbedBuilder {
-  const _DividerEmbedBuilder();
-
-  @override
-  String get key => 'divider';
-
-  @override
-  Widget build(BuildContext context, quill.EmbedContext embedContext) {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 8),
-      child: Divider(
-        height: 1,
-        thickness: 1,
-        color: Color(0xff313132),
-      ),
-    );
-  }
-}
+/// Top-level function required by compute() — reads file bytes in a background isolate.
+/// Only called on non-Web platforms where dart:io File is available.
+Future<Uint8List> _readXFileBytes(String path) => File(path).readAsBytes();

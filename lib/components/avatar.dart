@@ -29,11 +29,6 @@ class Avatar extends StatelessWidget {
               width: size,
               height: size,
               fit: BoxFit.cover,
-              placeholder: (context, url) => Assets.images.profilePhoto.image(
-                height: size,
-                width: size,
-                fit: BoxFit.cover,
-              ),
               fadeInDuration: Duration.zero,
               fadeOutDuration: Duration.zero,
               errorWidget: (context, url, error) =>
