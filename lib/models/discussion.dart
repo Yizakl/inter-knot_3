@@ -147,6 +147,13 @@ DiscussionModel parseDiscussionData(Map<String, dynamic> json) {
         (json['updatedAt'] is String ? json['updatedAt'] as String : null)
             .use((v) => DateTime.parse(v)),
     author: author,
+    likesCount: (json['likescount'] ?? json['likesCount']) is int
+        ? (json['likescount'] ?? json['likesCount']) as int
+        : int.tryParse(
+              (json['likescount'] ?? json['likesCount'] ?? 0).toString(),
+            ) ??
+            0,
+    liked: json['liked'] == true,
     isRead: json['isRead'] == true,
     isPinned: json['isPinned'] == true,
     comments: commentsJson != null
@@ -181,6 +188,8 @@ class DiscussionModel {
   DateTime createdAt;
   DateTime? lastEditedAt;
   int commentsCount;
+  int likesCount;
+  bool liked;
   AuthorModel author;
   List<PaginationModel<CommentModel>> comments;
 
@@ -206,6 +215,8 @@ class DiscussionModel {
     createdAt = other.createdAt;
     lastEditedAt = other.lastEditedAt;
     author = other.author;
+    likesCount = other.likesCount;
+    liked = other.liked;
     // updated fields from detail api
   }
 
@@ -250,6 +261,8 @@ class DiscussionModel {
     required this.id,
     required this.createdAt,
     required this.commentsCount,
+    this.likesCount = 0,
+    this.liked = false,
     required this.lastEditedAt,
     required this.author,
     this.isRead = false,
@@ -285,6 +298,8 @@ class DiscussionModel {
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': lastEditedAt?.toIso8601String(),
       'commentsCount': commentsCount,
+      'likescount': likesCount,
+      'liked': liked,
       'author': author.toJson(),
     };
   }

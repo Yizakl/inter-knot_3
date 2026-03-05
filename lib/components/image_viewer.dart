@@ -34,6 +34,7 @@ class ImageViewer extends StatefulWidget {
     showZZZDialog(
       context: context,
       transitionDuration: const Duration(milliseconds: 260),
+      showBackgroundEffect: false,
       pageBuilder: (context) => Center(
         child: ImageViewer(
           imageUrls: imageUrls,

@@ -99,7 +99,7 @@ class BaseConnect extends GetConnect {
       // EXCEPT specific user-related endpoints like /api/articles/my
       final isPublicEndpoint =
           (path.startsWith('/api/articles') && !path.contains('/my')) ||
-              path.startsWith('/api/comments') ||
+              (path.startsWith('/api/comments') && !path.contains('/likes')) ||
               path.startsWith('/api/authors');
 
       // Only attach token if it exists AND (it's not a GET request OR it's not a public endpoint)
@@ -364,6 +364,42 @@ class Api extends BaseConnect {
     return 'image/jpeg';
   }
 
+  String _normalizeImageMimeType({
+    required String filename,
+    required String mimeType,
+  }) {
+    final normalized = mimeType.trim().toLowerCase().split(';').first;
+    const supported = <String>{
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'image/bmp',
+    };
+
+    final lowerFilename = filename.toLowerCase();
+    final hasKnownImageExtension =
+        lowerFilename.endsWith('.jpg') ||
+            lowerFilename.endsWith('.jpeg') ||
+            lowerFilename.endsWith('.png') ||
+            lowerFilename.endsWith('.gif') ||
+            lowerFilename.endsWith('.webp') ||
+            lowerFilename.endsWith('.bmp');
+
+    // 某些平台（尤其移动端）会返回错误 mimeType；如果文件后缀明确，优先信任后缀。
+    if (hasKnownImageExtension) {
+      return _contentTypeFromFilename(filename);
+    }
+
+    if (normalized == 'image/jpg') return 'image/jpeg';
+
+    if (supported.contains(normalized)) {
+      return normalized;
+    }
+
+    return _contentTypeFromFilename(filename);
+  }
+
   String _slugify(String input, {bool ensureUnique = false}) {
     final normalized = input
         .toLowerCase()
@@ -458,6 +494,15 @@ class Api extends BaseConnect {
       );
     }
 
+    final token = box.read<String>('access_token') ?? '';
+    Future<Map<String, bool>>? likedFuture;
+    if (token.isNotEmpty) {
+      likedFuture = batchCheckLikes(
+        targetType: 'article',
+        targetIds: [id],
+      );
+    }
+
     final res = await articleFuture;
     final data = unwrapData<Map<String, dynamic>>(res);
 
@@ -477,6 +522,17 @@ class Api extends BaseConnect {
       }
     }
 
+    if (likedFuture != null) {
+      try {
+        final likedMap = await likedFuture;
+        if (likedMap.containsKey(id)) {
+          data['liked'] = likedMap[id];
+        }
+      } catch (e) {
+        debugPrint('Failed to fetch liked status: $e');
+      }
+    }
+
     final discussion = await compute(_parseDiscussionSync, data);
     final controller = Get.find<Controller>();
     controller.applyLocalOverrides(discussion);
@@ -487,6 +543,22 @@ class Api extends BaseConnect {
   Future<DiscussionModel> getArticleDetail(String documentId) async {
     final res = await get('/api/articles/detail/$documentId');
     final data = unwrapData<Map<String, dynamic>>(res);
+
+    final token = box.read<String>('access_token') ?? '';
+    if (token.isNotEmpty) {
+      try {
+        final likedMap = await batchCheckLikes(
+          targetType: 'article',
+          targetIds: [documentId],
+        );
+        if (likedMap.containsKey(documentId)) {
+          data['liked'] = likedMap[documentId];
+        }
+      } catch (e) {
+        debugPrint('ArticleDetail Liked Status Error: $e');
+      }
+    }
+
     return _parseDiscussionSync(data);
   }
 
@@ -722,6 +794,36 @@ class Api extends BaseConnect {
 
     final data = unwrapData<List<dynamic>>(res);
     final comments = await compute(_parseCommentListSync, data);
+
+    // Batch check liked status for comments
+    try {
+      final token = box.read<String>('access_token') ?? '';
+      if (token.isNotEmpty && comments.isNotEmpty) {
+        final allIds = <String>[];
+        for (final c in comments) {
+          allIds.add(c.id);
+          for (final r in c.replies) {
+            allIds.add(r.id);
+          }
+        }
+        if (allIds.isNotEmpty) {
+          final likedMap = await batchCheckLikes(
+            targetType: 'comment',
+            targetIds: allIds,
+          );
+          if (likedMap.isNotEmpty) {
+            for (final c in comments) {
+              if (likedMap.containsKey(c.id)) c.liked = likedMap[c.id]!;
+              for (final r in c.replies) {
+                if (likedMap.containsKey(r.id)) r.liked = likedMap[r.id]!;
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Comment Liked Status Error: $e');
+    }
 
     final hasNextPage = comments.length >= ApiConfig.defaultPageSize;
     final nextEndCur =
@@ -1300,19 +1402,54 @@ class Api extends BaseConnect {
     required String mimeType,
     required void Function(int percent) onProgress,
   }) async {
+    final normalizedMimeType = _normalizeImageMimeType(
+      filename: filename,
+      mimeType: mimeType,
+    );
+
     final form = FormData({
-      'files': MultipartFile(bytes, filename: filename, contentType: mimeType),
+      'files': MultipartFile(
+        bytes,
+        filename: filename,
+        contentType: normalizedMimeType,
+      ),
     });
 
     final res = await post(
       '/api/upload',
       form,
-      uploadProgress: (percent) => onProgress((percent * 100).round()),
+      uploadProgress: (percent) {
+        final normalizedPercent = percent <= 1 ? percent * 100 : percent;
+        onProgress(normalizedPercent.round().clamp(0, 100).toInt());
+      },
     );
 
     if (res.hasError) {
-      throw ApiException(res.statusText ?? 'Upload failed',
-          statusCode: res.statusCode);
+      String message = res.statusText ?? 'Upload failed';
+      final body = res.body;
+      if (body is Map) {
+        final error = body['error'];
+        if (error is Map && error['message'] != null) {
+          message = error['message'].toString();
+        } else if (error is String && error.isNotEmpty) {
+          message = error;
+        }
+      }
+
+      if (res.statusCode == 413) {
+        message = '图片过大，上传失败（413）';
+      }
+
+      debugPrint(
+        'uploadImage failed: filename=$filename, size=${bytes.length}, '
+        'mime=$mimeType, normalizedMime=$normalizedMimeType, '
+        'status=${res.statusCode}, body=${res.bodyString}',
+      );
+      throw ApiException(
+        message,
+        statusCode: res.statusCode,
+        details: res.bodyString,
+      );
     }
 
     final body = res.body;
@@ -1415,4 +1552,75 @@ class Api extends BaseConnect {
     }
     return false;
   }
+
+  // ─── Like API ───
+
+  Future<({bool liked, int likesCount})> toggleLike({
+    required String targetType,
+    required String targetId,
+  }) async {
+    final res = await post(
+      '/api/likes/toggle',
+      {
+        'targetType': targetType,
+        'targetId': targetId,
+      },
+    );
+
+    if (res.hasError) {
+      debugPrint('ToggleLike Error: ${res.statusCode} - ${res.bodyString}');
+      final body = res.body;
+      String msg = 'Toggle like failed';
+      if (body is Map) {
+        final error = body['error'];
+        if (error is Map && error['message'] != null) {
+          msg = error['message'].toString();
+        }
+      }
+      throw ApiException(msg, statusCode: res.statusCode);
+    }
+
+    final body = res.body;
+    if (body is Map<String, dynamic>) {
+      return (
+        liked: body['liked'] == true,
+        likesCount: (body['likesCount'] as num?)?.toInt() ?? 0,
+      );
+    }
+    throw ApiException('Invalid toggle like response');
+  }
+
+  Future<Map<String, bool>> batchCheckLikes({
+    required String targetType,
+    required List<String> targetIds,
+  }) async {
+    if (targetIds.isEmpty) return {};
+
+    final token = box.read<String>('access_token') ?? '';
+    if (token.isEmpty) return {};
+
+    final res = await get(
+      '/api/likes/check',
+      query: {
+        'targetType': targetType,
+        'targetIds': targetIds.join(','),
+      },
+      headers: {'Authorization': 'Bearer $token'},
+    );
+
+    if (res.hasError) {
+      debugPrint('BatchCheckLikes Error: ${res.statusCode} - ${res.bodyString}');
+      return {};
+    }
+
+    final body = res.body;
+    if (body is Map<String, dynamic>) {
+      final data = body['data'];
+      if (data is Map) {
+        return data.map((k, v) => MapEntry(k.toString(), v == true));
+      }
+    }
+    return {};
+  }
+
 }

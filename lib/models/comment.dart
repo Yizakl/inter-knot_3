@@ -11,6 +11,8 @@ class CommentModel {
   final replies = <CommentModel>{};
   final String id;
   final String url;
+  int likesCount;
+  bool liked;
 
   CommentModel({
     required this.author,
@@ -20,6 +22,8 @@ class CommentModel {
     required Iterable<CommentModel> replies,
     required this.id,
     required this.url,
+    this.likesCount = 0,
+    this.liked = false,
   }) {
     this.replies.addAll(replies);
   }
@@ -54,6 +58,10 @@ class CommentModel {
       replies: repliesList,
       id: (json['documentId'] as String?) ?? json['id']?.toString() ?? '',
       url: '', // URL not supported yet
+      likesCount: (json['likescount'] ?? json['likesCount'] ?? 0) is int
+          ? (json['likescount'] ?? json['likesCount'] ?? 0) as int
+          : int.tryParse((json['likescount'] ?? json['likesCount'] ?? 0).toString()) ?? 0,
+      liked: json['liked'] == true,
     );
   }
 

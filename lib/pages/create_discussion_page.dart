@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -10,8 +11,10 @@ import 'package:inter_knot/api/api.dart';
 import 'package:inter_knot/controllers/data.dart';
 import 'package:inter_knot/helpers/dialog_helper.dart';
 import 'package:inter_knot/helpers/drop_zone.dart';
+import 'package:inter_knot/helpers/image_compress_helper.dart';
 import 'package:inter_knot/helpers/normalize_markdown.dart';
 import 'package:inter_knot/helpers/toast.dart';
+import 'package:inter_knot/helpers/upload_task.dart';
 import 'package:inter_knot/helpers/web_hooks.dart';
 import 'package:markdown_quill/markdown_quill.dart';
 
@@ -54,11 +57,28 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
   final _mobileBodyController = TextEditingController();
   final _quillController = quill.QuillController.basic();
 
-  // Images State
-  final RxList<({String id, String url})> _uploadedImages =
-      <({String id, String url})>[].obs;
-  bool _isCoverUploading = false;
+  // Images State — each image is tracked as an UploadTask with its own status/progress
+  final RxList<UploadTask> _uploadTasks = <UploadTask>[].obs;
   bool _isDragging = false;  // 拖拽状态
+
+  // 压缩是 CPU 密集型任务：限制并发，避免 UI 卡顿（Web 单线程更明显）
+  final Queue<Completer<void>> _compressionWaiters = Queue<Completer<void>>();
+  int _activeCompressionCount = 0;
+
+  int get _maxCompressionConcurrency => kIsWeb ? 1 : 2;
+
+  /// 已成功上传的图片（便捷 getter）
+  List<({String id, String url})> get _uploadedImages => _uploadTasks
+      .where((t) => t.status.value == UploadStatus.done)
+      .map((t) => (id: t.serverId!, url: t.serverUrl!))
+      .toList();
+
+  /// 是否有任何图片正在上传/压缩中
+  bool get _isCoverUploading =>
+      _uploadTasks.any((t) =>
+          t.status.value == UploadStatus.uploading ||
+          t.status.value == UploadStatus.compressing ||
+          t.status.value == UploadStatus.pending);
 
   bool isLoading = false;
   int _selectedIndex = 0;
@@ -115,51 +135,142 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
   /// 处理拖拽上传的图片（用于封面）
   Future<void> _handleDroppedImages(
       List<({String filename, Uint8List bytes, String mimeType})> files) async {
-    if (_isCoverUploading) return;
-    if (_uploadedImages.length >= _maxCoverImages) {
+    if (_uploadTasks.length >= _maxCoverImages) {
       showToast('最多上传 9 张图片', isError: true);
       return;
     }
 
-    // 过滤数量
-    final remaining = _maxCoverImages - _uploadedImages.length;
+    final remaining = _maxCoverImages - _uploadTasks.length;
     final toUpload = files.take(remaining).toList();
 
-    setState(() {
-      _isCoverUploading = true;
-    });
+    for (final file in toUpload) {
+      if (file.bytes.length > _maxImageBytes) {
+        showToast('图片 ${file.filename} 超过 15MB，已跳过', isError: true);
+        continue;
+      }
+      _enqueueUploadTask(
+        filename: file.filename,
+        bytes: file.bytes,
+        mimeType: file.mimeType,
+      );
+    }
+  }
 
+  /// 创建上传任务并立即开始压缩+上传（并行）
+  void _enqueueUploadTask({
+    required String filename,
+    required Uint8List bytes,
+    required String mimeType,
+  }) {
+    final task = UploadTask(
+      localId: '${DateTime.now().millisecondsSinceEpoch}_${_uploadTasks.length}',
+      filename: filename,
+      bytes: bytes,
+      mimeType: mimeType,
+    );
+    // 保存本地预览用的缩略图
+    task.localPreviewBytes = bytes;
+    _uploadTasks.add(task);
+
+    // 异步启动，不阻塞其他任务
+    _executeUploadTask(task);
+  }
+
+  /// 执行单个上传任务：压缩 → 上传
+  Future<void> _executeUploadTask(UploadTask task) async {
     try {
-      for (final file in toUpload) {
-        // 检查大小（15MB）
-        if (file.bytes.length > _maxImageBytes) {
-          showToast('图片 ${file.filename} 超过 15MB，已跳过', isError: true);
-          continue;
-        }
+      // 1. 压缩阶段（限流，防止多图并发压缩导致 UI 卡死）
+      await _acquireCompressionSlot();
+      final Uint8List compressed;
+      try {
+        task.status.value = UploadStatus.compressing;
+        task.progress.value = 0;
+        _uploadTasks.refresh();
 
-        final result = await api.uploadImage(
-          bytes: file.bytes,
-          filename: file.filename,
-          mimeType: file.mimeType,
-          onProgress: (_) {},
+        // 先让 UI 有机会渲染“压缩中”状态
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+
+        compressed = await ImageCompressHelper.compress(
+          bytes: task.bytes,
+          filename: task.filename,
+          mimeType: task.mimeType,
         );
+      } finally {
+        _releaseCompressionSlot();
+      }
+      task.bytes = compressed;
 
-        if (result != null) {
-          final id = result['id'];
-          final url = result['url'] as String?;
+      // 2. 上传阶段
+      task.status.value = UploadStatus.uploading;
+      task.progress.value = 0;
+      _uploadTasks.refresh();
 
-          if (id != null && url != null) {
-            _uploadedImages.add((id: id.toString(), url: _toFullImageUrl(url)));
-          }
+      final result = await api.uploadImage(
+        bytes: compressed,
+        filename: task.filename,
+        mimeType: task.mimeType,
+        onProgress: (percent) {
+          task.progress.value = percent;
+        },
+      );
+
+      if (result != null) {
+        final id = result['id'];
+        final url = result['url'] as String?;
+        if (id != null && url != null) {
+          task.serverId = id.toString();
+          task.serverUrl = _toFullImageUrl(url);
+          task.status.value = UploadStatus.done;
+          task.progress.value = 100;
+          _uploadTasks.refresh();
+          return;
         }
       }
+      task.status.value = UploadStatus.error;
+      task.errorMessage = '服务器未返回有效数据';
+      _uploadTasks.refresh();
     } catch (e) {
-      debugPrint('Upload dropped images failed: $e');
-      showToast('上传出错: $e', isError: true);
-    } finally {
-      setState(() {
-        _isCoverUploading = false;
-      });
+      debugPrint('Upload task failed: $e');
+      task.status.value = UploadStatus.error;
+      task.errorMessage = e.toString();
+      _uploadTasks.refresh();
+    }
+  }
+
+  /// 重试失败的上传任务
+  void _retryUploadTask(UploadTask task) {
+    if (task.status.value != UploadStatus.error) return;
+    task.status.value = UploadStatus.pending;
+    task.errorMessage = null;
+    task.progress.value = 0;
+    _uploadTasks.refresh();
+    _executeUploadTask(task);
+  }
+
+  /// 移除上传任务
+  void _removeUploadTask(int index) {
+    if (index >= 0 && index < _uploadTasks.length) {
+      _uploadTasks.removeAt(index);
+    }
+  }
+
+  Future<void> _acquireCompressionSlot() async {
+    if (_activeCompressionCount < _maxCompressionConcurrency) {
+      _activeCompressionCount++;
+      return;
+    }
+    final waiter = Completer<void>();
+    _compressionWaiters.add(waiter);
+    await waiter.future;
+    _activeCompressionCount++;
+  }
+
+  void _releaseCompressionSlot() {
+    if (_activeCompressionCount > 0) {
+      _activeCompressionCount--;
+    }
+    if (_compressionWaiters.isNotEmpty) {
+      _compressionWaiters.removeFirst().complete();
     }
   }
 
@@ -192,8 +303,23 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
     required String mimeType,
   }) async {
     try {
+      // 压缩图片后再上传
+      await _acquireCompressionSlot();
+      final Uint8List compressed;
+      try {
+        // 给 UI 一个渲染帧，避免主线程长任务造成“假死感”
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+        compressed = await ImageCompressHelper.compress(
+          bytes: bytes,
+          filename: filename,
+          mimeType: mimeType,
+        );
+      } finally {
+        _releaseCompressionSlot();
+      }
+
       final result = await api.uploadImage(
-        bytes: bytes,
+        bytes: compressed,
         filename: filename,
         mimeType: mimeType,
         onProgress: (_) {},
@@ -295,14 +421,12 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
   }
 
   Future<void> _pickImages() async {
-    if (_isCoverUploading) return;
-    if (_uploadedImages.length >= _maxCoverImages) {
+    if (_uploadTasks.length >= _maxCoverImages) {
       showToast('最多上传 9 张图片', isError: true);
       return;
     }
 
     final picker = ImagePicker();
-    // Allow multiple selection
     final files = await picker.pickMultiImage();
     if (files.isEmpty) return;
 
@@ -316,24 +440,21 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
 
     if (validFiles.isEmpty) return;
 
-    // Filter by count
-    final remaining = _maxCoverImages - _uploadedImages.length;
+    final remaining = _maxCoverImages - _uploadTasks.length;
     final toUpload = validFiles.take(remaining).toList();
+    if (toUpload.length < validFiles.length) {
+      showToast('已达上限，仅添加 ${toUpload.length} 张', isError: true);
+    }
 
-    setState(() {
-      _isCoverUploading = true;
-    });
-
-    try {
-      for (final file in toUpload) {
-        // Check size (15MB)
+    // 并行读取所有文件字节，然后并行启动上传任务
+    for (final file in toUpload) {
+      try {
         final len = await file.length();
         if (len > _maxImageBytes) {
           showToast('图片 ${file.name} 超过 15MB，已跳过', isError: true);
           continue;
         }
 
-        // Read bytes; on native use background isolate to avoid blocking UI
         final Uint8List bytes;
         if (kIsWeb) {
           bytes = await file.readAsBytes();
@@ -342,30 +463,14 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
         }
         final mimeType = file.mimeType ?? 'image/jpeg';
 
-        final result = await api.uploadImage(
-          bytes: bytes,
+        _enqueueUploadTask(
           filename: file.name,
+          bytes: bytes,
           mimeType: mimeType,
-          onProgress: (_) {},
         );
-
-        if (result != null) {
-          final id = result['id'];
-          final url = result['url'] as String?;
-
-          if (id != null && url != null) {
-            _uploadedImages.add((id: id.toString(), url: _toFullImageUrl(url)));
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Upload images failed: $e');
-      if (mounted) showToast('上传出错: $e', isError: true);
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isCoverUploading = false;
-        });
+      } catch (e) {
+        debugPrint('Read file failed: $e');
+        if (mounted) showToast('读取 ${file.name} 失败', isError: true);
       }
     }
   }
@@ -432,9 +537,19 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
         _quillController.document.insert(0, widget.discussion!.rawBodyText);
       }
 
-      // Load covers
+      // Load existing covers as already-done upload tasks
       for (final cover in widget.discussion!.coverImages) {
-        _uploadedImages.add((id: '', url: cover.url));
+        final task = UploadTask(
+          localId: 'existing_${_uploadTasks.length}',
+          filename: '',
+          bytes: Uint8List(0),
+          mimeType: 'image/jpeg',
+        );
+        task.serverId = '';
+        task.serverUrl = cover.url;
+        task.status.value = UploadStatus.done;
+        task.progress.value = 100;
+        _uploadTasks.add(task);
       }
     }
   }
@@ -537,6 +652,11 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
 
     if (title.isEmpty) {
       showToast('标题不能为空', isError: true);
+      return;
+    }
+    // Block submission while images are still uploading
+    if (_isCoverUploading) {
+      showToast('图片正在上传中，请稍候', isError: true);
       return;
     }
     // Content check: either text or images must exist
@@ -673,8 +793,9 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
       onPickAndUploadImage: _pickAndUploadImage,
       isMobile: true,
       mobileBodyController: _mobileBodyController,
-      mobileImages: _uploadedImages,
-      onRemoveMobileImage: (index) => _uploadedImages.removeAt(index),
+      mobileUploadTasks: _uploadTasks,
+      onRemoveMobileImage: _removeUploadTask,
+      onRetryMobileImage: _retryUploadTask,
     );
 
     final content = PageView(
@@ -693,11 +814,11 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
           onPickAndUploadImage: _pickAndUploadImage,
         ),
         CreateDiscussionCoverPage(
-          uploadedImages: _uploadedImages,
+          uploadTasks: _uploadTasks,
           isDragging: _isDragging,
-          isCoverUploading: _isCoverUploading,
           onPickImages: _pickImages,
-          onRemoveImageAt: (index) => _uploadedImages.removeAt(index),
+          onRemoveImageAt: _removeUploadTask,
+          onRetryAt: _retryUploadTask,
           onDroppedImages: _handleDroppedImages,
           onDraggingChanged: (isDragging) {
             setState(() {
@@ -716,7 +837,13 @@ class _CreateDiscussionPageState extends State<CreateDiscussionPage> {
                 isLoading: isLoading,
                 onPickImage: _pickImages,
                 onSubmit: () => _submit(isMobile: true),
-                imageCount: _uploadedImages.length,
+                imageCount: _uploadTasks.length,
+                uploadingCount: _uploadTasks
+                    .where((t) =>
+                        t.status.value == UploadStatus.uploading ||
+                        t.status.value == UploadStatus.compressing ||
+                        t.status.value == UploadStatus.pending)
+                    .length,
               )),
       body: SafeArea(
         child: Column(

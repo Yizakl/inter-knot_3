@@ -13,6 +13,7 @@ import 'package:inter_knot/helpers/num2dur.dart';
 import 'package:inter_knot/helpers/throttle.dart';
 import 'package:inter_knot/helpers/toast.dart';
 import 'package:inter_knot/models/author.dart';
+import 'package:inter_knot/models/comment.dart';
 import 'package:inter_knot/models/discussion.dart';
 import 'package:inter_knot/models/h_data.dart';
 import 'package:inter_knot/pages/login_page.dart';
@@ -909,6 +910,80 @@ class Controller extends GetxController {
       showToast('头像上传失败: $e', isError: true);
     } finally {
       isUploadingAvatar(false);
+    }
+  }
+
+  Future<void> toggleArticleLike(DiscussionModel discussion) async {
+    if (isLogin.isFalse) {
+      if (!await ensureLogin()) return;
+    }
+
+    final oldLiked = discussion.liked;
+    final oldCount = discussion.likesCount;
+
+    // Optimistic update
+    discussion.liked = !oldLiked;
+    discussion.likesCount = oldLiked
+        ? (oldCount > 0 ? oldCount - 1 : 0)
+        : oldCount + 1;
+
+    // Update cached discussion
+    HDataModel.upsertCachedDiscussion(discussion);
+    searchResult.refresh();
+    bookmarks.refresh();
+    history.refresh();
+
+    try {
+      final result = await api.toggleLike(
+        targetType: 'article',
+        targetId: discussion.id,
+      );
+      // Reconcile with server response
+      discussion.liked = result.liked;
+      discussion.likesCount = result.likesCount;
+      HDataModel.upsertCachedDiscussion(discussion);
+      searchResult.refresh();
+      bookmarks.refresh();
+      history.refresh();
+    } catch (e) {
+      // Rollback on error
+      discussion.liked = oldLiked;
+      discussion.likesCount = oldCount;
+      HDataModel.upsertCachedDiscussion(discussion);
+      searchResult.refresh();
+      bookmarks.refresh();
+      history.refresh();
+      showToast('操作失败: $e', isError: true);
+    }
+  }
+
+  Future<void> toggleCommentLike(CommentModel comment) async {
+    if (isLogin.isFalse) {
+      if (!await ensureLogin()) return;
+    }
+
+    final oldLiked = comment.liked;
+    final oldCount = comment.likesCount;
+
+    // Optimistic update
+    comment.liked = !oldLiked;
+    comment.likesCount = oldLiked
+        ? (oldCount > 0 ? oldCount - 1 : 0)
+        : oldCount + 1;
+
+    try {
+      final result = await api.toggleLike(
+        targetType: 'comment',
+        targetId: comment.id,
+      );
+      // Reconcile with server response
+      comment.liked = result.liked;
+      comment.likesCount = result.likesCount;
+    } catch (e) {
+      // Rollback on error
+      comment.liked = oldLiked;
+      comment.likesCount = oldCount;
+      showToast('操作失败: $e', isError: true);
     }
   }
 

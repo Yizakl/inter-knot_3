@@ -180,6 +180,56 @@ class DiscussionActionButtonsState extends State<DiscussionActionButtons>
     _focusNode.unfocus();
   }
 
+  bool _isLiking = false;
+
+  Future<void> _handleLike() async {
+    if (_isLiking) return;
+    _isLiking = true;
+    await c.toggleArticleLike(widget.discussion);
+    if (mounted) setState(() {});
+    _isLiking = false;
+  }
+
+  Widget _buildLikeButton() {
+    final liked = widget.discussion.liked;
+    final count = widget.discussion.likesCount;
+    return Tooltip(
+      message: liked ? '取消点赞' : '点赞',
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: const Color(0xff222222),
+          borderRadius: BorderRadius.circular(maxRadius),
+          border: Border.all(color: const Color(0xff2D2D2D), width: 4),
+        ),
+        child: ClickRegion(
+          onTap: _handleLike,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                liked ? Icons.thumb_up : Icons.thumb_up_outlined,
+                color: liked ? const Color(0xffD7FF00) : null,
+                size: 22,
+              ),
+              if (count > 0) ...[
+                const SizedBox(width: 4),
+                Text(
+                  count.toString(),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: liked ? const Color(0xffD7FF00) : Colors.grey,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _handleDelete() async {
     final confirmed = await showDeleteConfirmDialog(
       context: context,
@@ -363,12 +413,14 @@ class DiscussionActionButtonsState extends State<DiscussionActionButtons>
               child: Row(
                 children: [
                   const SizedBox(width: 8),
+                  _buildLikeButton(),
+                  const SizedBox(width: 8),
                   Obx(() {
                     final isLiked = c.bookmarks
                         .map((e) => e.id)
                         .contains(widget.discussion.id);
                     return Tooltip(
-                      message: isLiked ? '不喜欢' : '喜欢',
+                      message: isLiked ? '取消收藏' : '收藏',
                       child: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(

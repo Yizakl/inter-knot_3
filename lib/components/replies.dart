@@ -34,6 +34,39 @@ class Replies extends StatefulWidget {
 class _RepliesState extends State<Replies> {
   bool _expanded = false;
 
+  Widget _buildReplyLikeButton(CommentModel reply) {
+    final liked = reply.liked;
+    final count = reply.likesCount;
+    return GestureDetector(
+      onTap: () async {
+        final c = Get.find<Controller>();
+        await c.toggleCommentLike(reply);
+        if (mounted) setState(() {});
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            liked ? Icons.thumb_up : Icons.thumb_up_outlined,
+            size: 14,
+            color: liked ? const Color(0xffD7FF00) : Colors.grey,
+          ),
+          if (count > 0) ...[
+            const SizedBox(width: 3),
+            Text(
+              count.toString(),
+              style: TextStyle(
+                fontSize: 12,
+                color: liked ? const Color(0xffD7FF00) : Colors.grey,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.comment.replies.isEmpty) return const SizedBox.shrink();
@@ -169,6 +202,8 @@ class _RepliesState extends State<Replies> {
                               style: const TextStyle(
                                   fontSize: 13, color: Colors.grey),
                             ),
+                            const SizedBox(width: 8),
+                            _buildReplyLikeButton(reply),
                             const SizedBox(width: 8),
                             TextButton(
                               onPressed: () => widget.onReply(
@@ -389,6 +424,8 @@ class _RepliesState extends State<Replies> {
                     .format(reply.createdAt.toLocal()),
                 style: const TextStyle(fontSize: 13, color: Colors.grey),
               ),
+              const SizedBox(width: 8),
+              _buildReplyLikeButton(reply),
               const SizedBox(width: 8),
               TextButton(
                 onPressed: () => widget.onReply(

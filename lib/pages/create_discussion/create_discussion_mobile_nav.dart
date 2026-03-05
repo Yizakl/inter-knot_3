@@ -7,12 +7,14 @@ class CreateDiscussionMobileNav extends StatelessWidget {
     required this.onPickImage,
     required this.onSubmit,
     this.imageCount = 0,
+    this.uploadingCount = 0,
   });
 
   final bool isLoading;
   final VoidCallback onPickImage;
   final VoidCallback onSubmit;
   final int imageCount;
+  final int uploadingCount;
 
   @override
   Widget build(BuildContext context) {
@@ -30,6 +32,7 @@ class CreateDiscussionMobileNav extends StatelessWidget {
           _ToolButton(
             icon: Icons.image_outlined,
             label: imageCount > 0 ? '$imageCount' : null,
+            sublabel: uploadingCount > 0 ? '上传中$uploadingCount' : null,
             onTap: onPickImage,
           ),
           const Spacer(),
@@ -81,10 +84,12 @@ class _ToolButton extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.label,
+    this.sublabel,
   });
 
   final IconData icon;
   final String? label;
+  final String? sublabel;
   final VoidCallback onTap;
 
   @override
@@ -106,6 +111,16 @@ class _ToolButton extends StatelessWidget {
                   color: Color(0xffD7FF00),
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+            if (sublabel != null) ...[
+              const SizedBox(width: 6),
+              Text(
+                sublabel!,
+                style: TextStyle(
+                  color: const Color(0xffFBC02D).withValues(alpha: 0.85),
+                  fontSize: 11,
                 ),
               ),
             ],

@@ -22,5 +22,8 @@ String normalizeMarkdown(String input) {
     RegExp(r'!\[([^\]]*)\]\(([^)\s]+)\)\s*\)+(?=\s|$)'),
     (m) => '![${m[1]}](${m[2]})',
   );
+  // Collapse excessive newlines from DeltaToMarkdown (3+ -> 2), keeping
+  // standard paragraph separators (\n\n) intact.
+  out = out.replaceAll(RegExp(r'\n{3,}'), '\n\n');
   return out;
 }

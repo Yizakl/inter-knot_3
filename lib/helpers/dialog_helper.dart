@@ -11,6 +11,7 @@ Future<T?> showZZZDialog<T>({
   bool barrierDismissible = true,
   String barrierLabel = '取消',
   Duration? transitionDuration,
+  bool showBackgroundEffect = true,
 }) {
   return showGeneralDialog<T>(
     context: context,
@@ -23,41 +24,42 @@ Future<T?> showZZZDialog<T>({
     transitionBuilder: (context, animation, secondaryAnimation, child) {
       return Stack(
         children: [
-          // Fixed Background Layer (Fade Transition)
-          Positioned.fill(
-            child: AnimatedBuilder(
-              animation: animation,
-              builder: (context, child) {
-                return Opacity(
-                  opacity: const Interval(0, 0.01).transform(animation.value),
-                  child: child!,
-                );
-              },
-              child: IgnorePointer(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // Blur Effect
-                    BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                      child: const SizedBox.expand(),
-                    ),
-                    // Texture + Overlay
-                    Container(
-                      color:
-                          Colors.black.withValues(alpha: 0.6), // Dark overlay
-                      child: CustomPaint(
-                        painter: PatternPainter(
-                          color: Colors.white
-                              .withValues(alpha: 0.15), // Subtle lines
+          if (showBackgroundEffect)
+            // Fixed Background Layer (Fade Transition)
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: animation,
+                builder: (context, child) {
+                  return Opacity(
+                    opacity: const Interval(0, 0.01).transform(animation.value),
+                    child: child!,
+                  );
+                },
+                child: IgnorePointer(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Blur Effect
+                      BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                        child: const SizedBox.expand(),
+                      ),
+                      // Texture + Overlay
+                      Container(
+                        color: Colors.black
+                            .withValues(alpha: 0.6), // Dark overlay
+                        child: CustomPaint(
+                          painter: PatternPainter(
+                            color: Colors.white
+                                .withValues(alpha: 0.15), // Subtle lines
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
           // Dialog Content (Slide/Fade Transition)
           AnimatedBuilder(
             animation: animation,

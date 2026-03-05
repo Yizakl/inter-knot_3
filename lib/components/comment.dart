@@ -156,6 +156,38 @@ class _CommentState extends State<Comment> {
     );
   }
 
+  Widget _buildCommentLikeButton(CommentModel comment) {
+    final liked = comment.liked;
+    final count = comment.likesCount;
+    return GestureDetector(
+      onTap: () async {
+        await c.toggleCommentLike(comment);
+        if (mounted) setState(() {});
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            liked ? Icons.thumb_up : Icons.thumb_up_outlined,
+            size: 14,
+            color: liked ? const Color(0xffD7FF00) : Colors.grey,
+          ),
+          if (count > 0) ...[
+            const SizedBox(width: 3),
+            Text(
+              count.toString(),
+              style: TextStyle(
+                fontSize: 12,
+                color: liked ? const Color(0xffD7FF00) : Colors.grey,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildFooter() {
     if (widget.discussion.comments.isNotEmpty &&
         widget.discussion.comments.last.hasNextPage) {
@@ -297,6 +329,8 @@ class _CommentState extends State<Comment> {
                     .format(comment.createdAt.toLocal()),
                 style: const TextStyle(fontSize: 13, color: Colors.grey),
               ),
+              const SizedBox(width: 8),
+              _buildCommentLikeButton(comment),
               const SizedBox(width: 8),
               TextButton(
                 onPressed: () => widget.onReply
