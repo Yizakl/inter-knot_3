@@ -1,97 +1,55 @@
-name: build
+name: Flutter Build
 
 on: [push, workflow_dispatch]
 
 jobs:
-  # 构建 Linux 版本 (AppImage)
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout 代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Flutter 环境
+      - uses: actions/checkout@v4
+      - name: 设置 Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
           channel: 'stable'
-
-      - name: 安装依赖
-        run: flutter pub get
-
-      - name: 构建 Linux 应用
-        run: flutter build linux --release
-
-      - name: 安装 AppImage 打包依赖 (libfuse2)
+      - run: flutter pub get
+      - run: flutter build linux --release
+      - name: 打包 AppImage
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libfuse2
-
-      - name: 下载 appimagetool
-        run: wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-
-      - name: 赋予 appimagetool 执行权限
-        run: chmod +x appimagetool-x86_64.AppImage
-
-      - name: 打包为 AppImage
-        run: |
-          # 定义 AppImage 文件名（可根据项目修改）
-          APPIMAGE_NAME="flutter_app-linux-x86_64.AppImage"
-          # 执行打包（指向 Flutter 构建的 bundle 目录）
-          ./appimagetool-x86_64.AppImage build/linux/x64/release/bundle/ --output "$APPIMAGE_NAME"
-
-      - name: 上传 AppImage 产物
-        uses: actions/upload-artifact@v4
+          sudo apt-get update && sudo apt-get install -y libfuse2
+          wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage build/linux/x64/release/bundle/ --output flutter_app.AppImage
+      - uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
-          path: flutter_app-linux-x86_64.AppImage
+          path: flutter_app.AppImage
 
-  # 构建 Windows 版本
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout 代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Flutter 环境
+      - uses: actions/checkout@v4
+      - name: 设置 Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
           channel: 'stable'
-
-      - name: 安装依赖
-        run: flutter pub get
-
-      - name: 构建 Windows 应用
-        run: flutter build windows --release
-
-      - name: 上传 Windows 构建产物
-        uses: actions/upload-artifact@v4
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - uses: actions/upload-artifact@v4
         with:
           name: windows-app
           path: build/windows/x64/runner/Release/
 
-  # 构建 iOS 版本（无代码签名）
   build-ios:
     runs-on: macos-latest
     steps:
-      - name: Checkout 代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Flutter 环境
+      - uses: actions/checkout@v4
+      - name: 设置 Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
           channel: 'stable'
-
-      - name: 安装依赖
-        run: flutter pub get
-
-      - name: 构建 iOS 应用（无签名）
-        run: flutter build ios --release --no-codesign
-
-      - name: 上传 iOS 构建产物
-        uses: actions/upload-artifact@v4
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign
+      - uses: actions/upload-artifact@v4
         with:
           name: ios-app
           path: build/ios/iphoneos/
