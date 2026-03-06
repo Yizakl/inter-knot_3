@@ -6,6 +6,7 @@ import 'package:inter_knot/components/my_chip.dart';
 import 'package:inter_knot/constants/globals.dart';
 import 'package:inter_knot/controllers/data.dart';
 import 'package:inter_knot/gen/assets.gen.dart';
+import 'package:inter_knot/helpers/time_formatter.dart';
 import 'package:inter_knot/models/discussion.dart';
 
 class DiscussionHeaderBar extends StatelessWidget {
@@ -66,9 +67,8 @@ class DiscussionHeaderBar extends StatelessWidget {
                           discussion.author.name,
                           style: TextStyle(
                             fontSize: 16,
-                            color: isMe
-                                ? const Color(0xFFFFBC2E)
-                                : Colors.white,
+                            color:
+                                isMe ? const Color(0xFFFFBC2E) : Colors.white,
                             fontWeight: FontWeight.bold,
                           ),
                           maxLines: 1,
@@ -98,11 +98,10 @@ class DiscussionHeaderBar extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            discussion.createdAt
-                                .toLocal()
-                                .toString()
-                                .split('.')
-                                .first,
+                            formatRelativeTime(
+                              discussion.createdAt,
+                              fallbackPattern: 'yyyy-MM-dd HH:mm',
+                            ),
                             style: const TextStyle(
                               fontSize: 12,
                               color: Color(0xff808080),
