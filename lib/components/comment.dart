@@ -10,10 +10,10 @@ import 'package:inter_knot/constants/globals.dart';
 import 'package:inter_knot/controllers/data.dart';
 import 'package:inter_knot/helpers/dialog_helper.dart';
 import 'package:inter_knot/helpers/flatten.dart';
+import 'package:inter_knot/helpers/time_formatter.dart';
 import 'package:inter_knot/helpers/toast.dart';
 import 'package:inter_knot/models/comment.dart';
 import 'package:inter_knot/models/discussion.dart';
-import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 class Comment extends StatefulWidget {
@@ -89,8 +89,8 @@ class _CommentState extends State<Comment> {
 
     final user = c.user.value;
     final currentAuthorId = c.authorId.value ?? user?.authorId;
-    final isMe = currentAuthorId != null &&
-        currentAuthorId == comment.author.authorId;
+    final isMe =
+        currentAuthorId != null && currentAuthorId == comment.author.authorId;
     if (!isMe) {
       showToast('只能删除自己的评论', isError: true);
       return;
@@ -325,8 +325,10 @@ class _CommentState extends State<Comment> {
           Row(
             children: [
               Text(
-                DateFormat('yyyy-MM-dd HH:mm')
-                    .format(comment.createdAt.toLocal()),
+                formatRelativeTime(
+                  comment.createdAt,
+                  fallbackPattern: 'yyyy-MM-dd HH:mm',
+                ),
                 style: const TextStyle(fontSize: 13, color: Colors.grey),
               ),
               const SizedBox(width: 8),
@@ -371,7 +373,8 @@ class _CommentState extends State<Comment> {
                   children: [
                     const SizedBox(width: 8),
                     TextButton(
-                      onPressed: deleting ? null : () => _deleteComment(comment),
+                      onPressed:
+                          deleting ? null : () => _deleteComment(comment),
                       style: ButtonStyle(
                         padding: WidgetStateProperty.all(EdgeInsets.zero),
                         minimumSize: WidgetStateProperty.all(Size.zero),
@@ -455,10 +458,8 @@ class _CommentState extends State<Comment> {
 
     return Column(
       children: [
-        ...comments
-            .asMap()
-            .entries
-            .map((entry) => _buildCommentItem(entry.value, entry.key, isMobile)),
+        ...comments.asMap().entries.map(
+            (entry) => _buildCommentItem(entry.value, entry.key, isMobile)),
         _buildFooter(),
       ],
     );

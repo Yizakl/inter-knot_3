@@ -6,9 +6,9 @@ import 'package:inter_knot/constants/globals.dart';
 import 'package:get/get.dart';
 import 'package:inter_knot/controllers/data.dart';
 import 'package:inter_knot/components/image_viewer.dart';
+import 'package:inter_knot/helpers/time_formatter.dart';
 import 'package:inter_knot/models/comment.dart';
 import 'package:inter_knot/models/discussion.dart';
-import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 class Replies extends StatefulWidget {
@@ -183,7 +183,8 @@ class _RepliesState extends State<Replies> {
                             reply.bodyHTML,
                             textStyle: const TextStyle(
                               fontSize: 16,
-                              color: Color(0xffE0E0E0), // Light grey for replies
+                              color:
+                                  Color(0xffE0E0E0), // Light grey for replies
                             ),
                             onTapImage: (data) {
                               if (data.sources.isEmpty) return;
@@ -197,8 +198,10 @@ class _RepliesState extends State<Replies> {
                         Row(
                           children: [
                             Text(
-                              DateFormat('yyyy-MM-dd HH:mm')
-                                  .format(reply.createdAt.toLocal()),
+                              formatRelativeTime(
+                                reply.createdAt,
+                                fallbackPattern: 'yyyy-MM-dd HH:mm',
+                              ),
                               style: const TextStyle(
                                   fontSize: 13, color: Colors.grey),
                             ),
@@ -210,7 +213,8 @@ class _RepliesState extends State<Replies> {
                                   widget.comment.id, reply.author.name,
                                   addPrefix: true),
                               style: ButtonStyle(
-                                padding: WidgetStateProperty.all(EdgeInsets.zero),
+                                padding:
+                                    WidgetStateProperty.all(EdgeInsets.zero),
                                 minimumSize: WidgetStateProperty.all(Size.zero),
                                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                 visualDensity: VisualDensity.compact,
@@ -247,17 +251,18 @@ class _RepliesState extends State<Replies> {
                                     currentAuthorId == reply.author.authorId;
                                 if (!isMe) return const SizedBox.shrink();
 
-                                final deleting =
-                                    widget.removingCommentIds.contains(reply.id);
+                                final deleting = widget.removingCommentIds
+                                    .contains(reply.id);
 
                                 return TextButton(
                                   onPressed: deleting
                                       ? null
                                       : () => widget.onDelete?.call(reply),
                                   style: ButtonStyle(
-                                    padding:
-                                        WidgetStateProperty.all(EdgeInsets.zero),
-                                    minimumSize: WidgetStateProperty.all(Size.zero),
+                                    padding: WidgetStateProperty.all(
+                                        EdgeInsets.zero),
+                                    minimumSize:
+                                        WidgetStateProperty.all(Size.zero),
                                     tapTargetSize:
                                         MaterialTapTargetSize.shrinkWrap,
                                     visualDensity: VisualDensity.compact,
@@ -377,9 +382,8 @@ class _RepliesState extends State<Replies> {
                         color: isMe
                             ? const Color(0xFFFFBC2E)
                             : baseTitleStyle.color,
-                        fontWeight: isMe
-                            ? FontWeight.bold
-                            : baseTitleStyle.fontWeight,
+                        fontWeight:
+                            isMe ? FontWeight.bold : baseTitleStyle.fontWeight,
                         fontSize: 13,
                       ),
                     );
@@ -420,8 +424,10 @@ class _RepliesState extends State<Replies> {
           Row(
             children: [
               Text(
-                DateFormat('yyyy-MM-dd HH:mm')
-                    .format(reply.createdAt.toLocal()),
+                formatRelativeTime(
+                  reply.createdAt,
+                  fallbackPattern: 'yyyy-MM-dd HH:mm',
+                ),
                 style: const TextStyle(fontSize: 13, color: Colors.grey),
               ),
               const SizedBox(width: 8),
@@ -460,7 +466,8 @@ class _RepliesState extends State<Replies> {
                   final deleting = widget.removingCommentIds.contains(reply.id);
 
                   return TextButton(
-                    onPressed: deleting ? null : () => widget.onDelete?.call(reply),
+                    onPressed:
+                        deleting ? null : () => widget.onDelete?.call(reply),
                     style: ButtonStyle(
                       padding: WidgetStateProperty.all(EdgeInsets.zero),
                       minimumSize: WidgetStateProperty.all(Size.zero),
