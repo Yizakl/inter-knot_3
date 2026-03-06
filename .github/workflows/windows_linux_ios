@@ -1,9 +1,6 @@
-name: Flutter Multi-Platform Build
+name: build
 
-on:
-  push:
-    branches: [ main ]  # <-- 修改这里：推送到 main 分支时自动运行
-  workflow_dispatch:    # <-- 保留这行：以后依然可以手动运行
+on: [push, workflow_dispatch]
 
 jobs:
   # 构建 Linux 版本 (AppImage)
