@@ -49,7 +49,13 @@ jobs:
           channel: 'stable'
       - run: flutter pub get
       - run: flutter build ios --release --no-codesign
+      - name: 打包 iOS 应用为 IPA
+        run: |
+          cd build/ios/iphoneos
+          zip -r flutter_app.zip .
+          mv flutter_app.zip flutter_app.ipa
+          cd ../../..
       - uses: actions/upload-artifact@v4
         with:
           name: ios-app
-          path: build/ios/iphoneos/
+          path: build/ios/iphoneos/flutter_app.ipa
