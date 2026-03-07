@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:inter_knot/components/image_viewer.dart';
@@ -30,74 +31,78 @@ class CreateDiscussionCoverPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final content = Container(
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: isDragging
+              ? const Color(0xffFBC02D)
+              : Colors.transparent,
+          width: 2,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Obx(() {
+        final tasks = uploadTasks;
+        return GridView.builder(
+          padding: const EdgeInsets.all(16),
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 160,
+            mainAxisSpacing: 16,
+            crossAxisSpacing: 16,
+          ),
+          itemCount: tasks.length + (tasks.length < 9 ? 1 : 0),
+          itemBuilder: (context, index) {
+            if (index == tasks.length) {
+              return _AddButton(
+                isDragging: isDragging,
+                onTap: onPickImages,
+              );
+            }
+
+            final task = tasks[index];
+            return _UploadTaskTile(
+              task: task,
+              index: index,
+              allTasks: tasks,
+              onRemove: () => onRemoveImageAt(index),
+              onRetry: () => onRetryAt(task),
+            );
+          },
+        );
+      }),
+    );
+
     return Column(
       children: [
         Expanded(
-          child: DropTarget(
-            onDragDone: (detail) async {
-              final files = detail.files;
-              if (files.isEmpty) return;
+          child: kIsWeb
+              ? content
+              : DropTarget(
+                  onDragDone: (detail) async {
+                    final files = detail.files;
+                    if (files.isEmpty) return;
 
-              final imageFiles = <DroppedImageFile>[];
-              for (final file in files) {
-                final mimeType = file.mimeType ?? 'image/jpeg';
-                if (!mimeType.startsWith('image/')) continue;
+                    final imageFiles = <DroppedImageFile>[];
+                    for (final file in files) {
+                      final mimeType = file.mimeType ?? 'image/jpeg';
+                      if (!mimeType.startsWith('image/')) continue;
 
-                final bytes = await file.readAsBytes();
-                imageFiles.add((
-                  filename: file.name,
-                  bytes: bytes,
-                  mimeType: mimeType,
-                ));
-              }
-
-              if (imageFiles.isNotEmpty) {
-                await onDroppedImages(imageFiles);
-              }
-            },
-            onDragEntered: (_) => onDraggingChanged(true),
-            onDragExited: (_) => onDraggingChanged(false),
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border.all(
-                  color: isDragging
-                      ? const Color(0xffFBC02D)
-                      : Colors.transparent,
-                  width: 2,
-                ),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Obx(() {
-                final tasks = uploadTasks;
-                return GridView.builder(
-                  padding: const EdgeInsets.all(16),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 160,
-                    mainAxisSpacing: 16,
-                    crossAxisSpacing: 16,
-                  ),
-                  itemCount: tasks.length + (tasks.length < 9 ? 1 : 0),
-                  itemBuilder: (context, index) {
-                    if (index == tasks.length) {
-                      return _AddButton(
-                        isDragging: isDragging,
-                        onTap: onPickImages,
-                      );
+                      final bytes = await file.readAsBytes();
+                      imageFiles.add((
+                        filename: file.name,
+                        bytes: bytes,
+                        mimeType: mimeType,
+                      ));
                     }
 
-                    final task = tasks[index];
-                    return _UploadTaskTile(
-                      task: task,
-                      index: index,
-                      allTasks: tasks,
-                      onRemove: () => onRemoveImageAt(index),
-                      onRetry: () => onRetryAt(task),
-                    );
+                    if (imageFiles.isNotEmpty) {
+                      await onDroppedImages(imageFiles);
+                    }
                   },
-                );
-              }),
-            ),
-          ),
+                  onDragEntered: (_) => onDraggingChanged(true),
+                  onDragExited: (_) => onDraggingChanged(false),
+                  child: content,
+                ),
         ),
       ],
     );
